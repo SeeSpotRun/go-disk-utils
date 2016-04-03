@@ -31,8 +31,8 @@ import (
         //
         "github.com/docopt/docopt-go"
         // local packages:
-        "walk"
-        "hddreader"
+        "github.com/SeeSpotRun/go-disk-utils/walk"
+        "github.com/SeeSpotRun/go-disk-utils/hddreader"
 )
 
 
