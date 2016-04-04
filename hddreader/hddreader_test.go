@@ -45,35 +45,55 @@ func TestRead(t *testing.T) {
 
         for i:=0; i<100; i++ {
 
-                // create disk with no read buffer
-                d := hddreader.NewDisk(1, 0, 0, 0, 100, 0)
-                var b bytes.Buffer
 
-                for _, x := range(testfiles) {
-                        wg.Add(1)
-                        go func(x testfile) {
-                                defer wg.Done()
-                                f, err := hddreader.Open(x.name, d)
-                                if err != nil {
-                                        t.Errorf("TestRead: %v", err)
-                                        return
-                                }
-                                defer f.Close()
-                                // set fake file offset so files get read in correct order
-                                f.Offset = x.fakeoffset
-                                // try to write data (will block until d.Start() called)
-                                io.Copy(&b, f)
-                        }(x)
+                copy := func( f *hddreader.File, b *bytes.Buffer ) {
+                        io.Copy(b, f)
                 }
-                d.Start(len(testfiles))
-                wg.Wait()
+                writeto := func( f *hddreader.File, b *bytes.Buffer) {
+                        f.WriteTo(b)
+                }
+                read := func( f *hddreader.File, b *bytes.Buffer) {
+                        buf := make([]byte, 128)
+                        n, e := f.Read(buf)
+                        if e != nil {
+                                t.Errorf("TestRead f.Read: %v", e)
+                        }
+                        b.Write(buf[:n])
+                }
 
-                expected := "Hello World"
-                got := b.String()
-                if got != expected {
-                        t.Errorf("TestRead: expected %s, got %s, iteration %d", expected, got, i+1)
+                for j, fun := range( []func(f *hddreader.File, b *bytes.Buffer){copy, writeto, read} ) {
+
+                        // create disk with no read buffer
+                        d := hddreader.NewDisk(1, 0, 0, 0, 100, 0)
+
+                        var b bytes.Buffer
+                        for _, x := range(testfiles) {
+                                wg.Add(1)
+                                go func(x testfile) {
+                                        defer wg.Done()
+                                        f, err := hddreader.Open(x.name, d)
+                                        if err != nil {
+                                                t.Errorf("TestRead: %v", err)
+                                                return
+                                        }
+                                        defer f.Close()
+                                        // set fake file offset so files get read in correct order
+                                        f.Offset = x.fakeoffset
+                                        // try to read data from file (will block until d.Start() called)
+                                        fun(f, &b)
+                                }(x)
+                        }
+
+                        d.Start(len(testfiles))
+                        wg.Wait()
+                        d.Close()
+
+                        expected := "Hello World"
+                        got := b.String()
+                        if got != expected {
+                                t.Errorf("TestRead io.Copy: expected %s, got %s, iteration %d, function %d", expected, got, i+1, j)
+                        }
                 }
-                d.Close()
         }
 
         // cleanup
