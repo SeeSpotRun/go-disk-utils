@@ -33,8 +33,9 @@ package hddreader
 
 /*
  * TODO:
- * [ ] write hddreader_test
- * [ ] add missing io.File calls
+ * [x] write hddreader_test
+ *     [ ] add some more test cases
+ * [ ] add missing os.File calls
  * [ ] add ssd option
  * [ ] write some utilities to use this package:
  *     [x] sum (fast checksum calculator)
@@ -180,7 +181,10 @@ type Disk struct {
 // the current head position. An additional up to maxopen files may be open for the
 // sole purpose of reading disk offset.
 //
-// If bufkB > 0 then an internal buffer pool is created to buffer reads.
+// If bufkB > 0 then an internal buffer pool is created to buffer WriteTo() calls.  Note that while
+// read order is preserved, buffering may change the order in which WriteTo(w) calls complete, depending
+// on speed at which buffers are writted to w.
+//
 func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int, bufkB int) *Disk {
 
         if maxread <= 0 {
