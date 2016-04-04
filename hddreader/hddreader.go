@@ -226,7 +226,11 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
         return self
 }
 
-func (self *Disk) Start()       {
+// Start needs to be called once in order to enable file data to start reading.
+// If wait > 0 then will wait until that many read requests have been registered before starting
+func (self *Disk) Start(wait int)       {
+        // wait until no Open() calls in progress
+        self.wait = wait
         self.startch <- nothing{}
 }
 
@@ -244,6 +248,11 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                 if !started {
                         return
                 }
+                if self.wait > 0 && len(reqs) + len(requ) < self.wait {
+                        // start signal received but not enough pending reads yet
+                        return
+                }
+                self.wait = 0
                 for ; len(reqs) + len(requ) > 0 && openFiles < maxread + maxwindow;  {
                         if len(requ) >= len(reqs) {
                                 // time to merge
