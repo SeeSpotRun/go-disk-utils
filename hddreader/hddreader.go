@@ -28,8 +28,7 @@
 // Main components:
 // File: file object, semi-interchangeable with io.File.  Implements: Reader, Closer, WriterTo
 // Disk: disk object, schedules file reads
-// BufferPool: pool of reusable same-sized []byte buffers
-
+// bufferpool: pool of reusable same-sized []byte buffers
 package hddreader
 
 /*
@@ -78,9 +77,9 @@ const (
 type nothing struct {}
 
 
-// Bufferpool manages a pool of recyclable fixed-size []byte buffers.  I learnt this trick from sahib:
+// bufferpool manages a pool of recyclable fixed-size []byte buffers.  I learnt this trick from sahib:
 // https://github.com/sahib/rmlint/commit/f8fe6ffa4684405ece1d7c3aa173d0c3d82ccdb1#diff-5181df57afdfbebfb9dd6e2fd4060cf6R18
-type BufferPool struct {
+type bufferpool struct {
     BufSize    int
     maxbufs    int
     nbufs      int
@@ -88,10 +87,10 @@ type BufferPool struct {
     reqs       chan nothing
 }
 
-// NewBufferPool creates a BufferPool and starts a goroutine which
+// newbufferpool creates a bufferpool and starts a goroutine which
 // feeds new buffers into the pool as required
-func NewBufferPool(bufsize int, maxbufs int) *BufferPool {
-        self := &BufferPool{
+func newbufferpool(bufsize int, maxbufs int) *bufferpool {
+        self := &bufferpool{
                         BufSize: bufsize,
                         maxbufs: maxbufs,
                         bufs:  make(chan([]byte), maxbufs),
@@ -110,8 +109,8 @@ func NewBufferPool(bufsize int, maxbufs int) *BufferPool {
         return self
 }
 
-// Get gets a buffer from the pool
-func (p *BufferPool) Get() []byte {
+// get gets a buffer from the pool
+func (p *bufferpool) get() []byte {
         select {
         case b:= <- p.bufs:
                 // recycled buffer
@@ -124,8 +123,8 @@ func (p *BufferPool) Get() []byte {
         }
 }
 
-// Return returns a buffer to the pool
-func (p *BufferPool) Return(b []byte) {
+// ret returns a buffer to the pool
+func (p *bufferpool) ret(b []byte) {
         select {
         // note: b is expanded to cap(b) before returning
         case p.bufs <- b[:cap(b)]:  // should not block
@@ -134,8 +133,8 @@ func (p *BufferPool) Return(b []byte) {
         }
 }
 
-// Close closes the Bufferpool and returns the number of buffers used
-func (p *BufferPool) Close() (used int, err error) {
+// close closes the bufferpool and returns the number of buffers used
+func (p *bufferpool) close() (used int, err error) {
         close(p.reqs)
         close(p.bufs)
         used = 0
@@ -156,7 +155,7 @@ type Disk struct {
         startch       chan struct{} // used to enable reading
         reqch         chan *File    // requests for read permission
         donech        chan *File    // signal that file has finished reading
-        bufpool       *BufferPool   // reusable read buffers
+        bufpool       *bufferpool   // reusable read buffers
 }
 
 // NewDisk creates a new disk object to schedule read operations.
@@ -165,7 +164,7 @@ type Disk struct {
 //            files may read simultaneously, provided their disk offsets are less
 //            than 'ahead' bytes ahead of or 'behind' bytes behind the disk's head position.
 // maxopen:   limits number of os.File objects simultaneously open
-// bufkB:     if >0, attach a BufferPool with max total kB = bufkB
+// bufkB:     if >0, attach a bufferpool with max total kB = bufkB
 func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int, bufkB int) *Disk {
 
         if maxread <= 0 {
@@ -197,12 +196,12 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
                     }
 
         if bufkB * 1024 > defaultBufSize {
-                self.bufpool = NewBufferPool(defaultBufSize, defaultBufCount)
+                self.bufpool = newbufferpool(defaultBufSize, defaultBufCount)
         }
 
         // Populate opench (a buffered chanel to limit total concurrent Open() + Read() calls)
         for i:=0; i<maxopen; i++ {
-                self.PushTicket()
+                self.pushtik()
         }
 
         // start scheduler to prioritise Read() calls
@@ -233,8 +232,8 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                 for ; len(reqs) + len(requ) > 0 && openFiles < maxread + maxwindow;  {
                         if len(requ) >= len(reqs) {
                                 // time to merge
-                                sort.Sort(ByOffset(requ))
-                                reqs = Merge(reqs, requ)
+                                sort.Sort(byoffset(requ))
+                                reqs = merge(reqs, requ)
                                 requ = nil
                         }
 
@@ -256,7 +255,7 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                                 reqs = reqs[:len(reqs)-1]
 
                                 // unblock pending read on popped file (respect MaxOpen too):
-                                self.PopTicket()
+                                self.poptik()
                                 openFiles++
                                 popped.wg.Done()
                         }
@@ -324,22 +323,24 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 
 }
 
-// PopTicket grants a ticket to open an fd
-func (d *Disk) PopTicket() {
+// poptik grants a ticket to open an fd
+func (d *Disk) poptik() {
         <- d.opench
 }
 
-// PushTicket returns an open fd ticket
-func (d *Disk) PushTicket() {
+// pushtik returns an open fd ticket
+func (d *Disk) pushtik() {
         d.opench <- nothing{}
 }
 
+// Closes closes the disk scheduler and frees buffer memory
 func (d *Disk) Close() {
         // TODO - close channels
 
         // close bufpool
         if d.bufpool != nil {
-                n, err := d.bufpool.Close()
+                n, err := d.bufpool.close()
+                // TODO: clean up debug logging
                 log.Printf("Buffers used: %d", n)
                 if err != nil {
                         log.Println(err)
@@ -357,7 +358,7 @@ type File struct {
     name   string  // duplicates *os.File.Name() since File may be closed
     Offset uint64  // file location relative to start of disk
     wg     sync.WaitGroup  // for signalling read permission
-    shut   bool    // whether *os.File is closed
+    isshut bool    // whether *os.File is closed
 }
 
 // Open creates a new File object associated with a Disk, and register the
@@ -365,11 +366,11 @@ type File struct {
 // total open file count falls below the disk's open file limit.
 func Open(name string, disk *Disk) (*File, error) {
 
-        self := &File{File: nil, disk: disk, name: name, shut: true}
+        self := &File{File: nil, disk: disk, name: name, isshut: true}
 
         // wait for open ticket
-        disk.PopTicket()
-        defer disk.PushTicket()
+        disk.poptik()
+        defer disk.pushtik()
 
         // try to open os.File
         file, err := os.Open(name)
@@ -384,7 +385,7 @@ func Open(name string, disk *Disk) (*File, error) {
         }
 
         // read file's location on disk
-        self.Offset, err = OffsetFile(file, 0, 0)
+        self.Offset, err = offsetf(file, 0, 0)
         if err != nil {
                 // not fatal, just inconvenient...
                 log.Printf("hddreader Open(): %s\n", err)
@@ -415,7 +416,7 @@ func (f *File) Read(b []byte) (n int, err error) {
 
         n, err = f.File.Read(b)
         if err != nil && err != io.EOF {
-                log.Printf("Shut %s\n", f.name)
+                log.Printf("shut %s\n", f.name)
                 f.Close()
         }
 
@@ -452,7 +453,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
                 go func() {
                         for b := range(ch) {
                                 m, werr := w.Write(b)
-                                f.disk.bufpool.Return(b)
+                                f.disk.bufpool.ret(b)
                                 n +=  int64(m)
                                 if werr != nil {
                                         close(ch)
@@ -464,14 +465,14 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
                 // do the reading and send to the writer goroutine
                 for ; err == nil; {
-                        b := f.disk.bufpool.Get()
+                        b := f.disk.bufpool.get()
                         var m int
                         m, err = f.File.Read(b)
                         if err == nil || err == io.EOF {
                                 // send read data to the writer goroutine
                                 ch <- b[:m]
                         } else {
-                                f.disk.bufpool.Return(b)
+                                f.disk.bufpool.ret(b)
                         }
                 }
                 close(ch)
@@ -481,7 +482,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
                 }
 
                 // shut the underlying file
-                e := f.Shut()
+                e := f.shut()
                 if e != nil && err == nil {
                         err = e
                 }
@@ -503,7 +504,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
                 m, err := w.ReadFrom(f.File)
                 n += m
                 // shut the underlying file
-                e := f.Shut()
+                e := f.shut()
                 if e != nil && (err == nil || err == io.EOF) {
                         err = e
                 }
@@ -544,19 +545,19 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
 
 // shut closes the underlying os.File but not f itself
-func (f *File) Shut() (err error) {
+func (f *File) shut() (err error) {
         if f == nil {
                 return os.ErrInvalid
         }
 
-        if f.shut {
-                panic("Attempt to Shut a shut file")
+        if f.isshut {
+                panic("Attempt to shut a shut file")
         }
 
         // close the file
         err = f.File.Close()
-        f.shut = true
-        f.disk.PushTicket()
+        f.isshut = true
+        f.disk.pushtik()
 
         return
 }
@@ -566,7 +567,7 @@ func (f *File) Shut() (err error) {
 // it's a NOP, otherwise it blocks until permission is granted by f.disk
 // to start reading.
 func (f *File) open() (err error) {
-        if f.shut {
+        if f.isshut {
 
                 f.wg.Add(1)
                 f.disk.reqch <- f
@@ -577,7 +578,7 @@ func (f *File) open() (err error) {
                         // failed to open, tell disk
                         f.disk.donech <- f
                 } else {
-                        f.shut = false
+                        f.isshut = false
                 }
         }
         return
@@ -586,8 +587,8 @@ func (f *File) open() (err error) {
 
 // Close closes f, notifying the disk scheduler accordingly
 func (f *File) Close() (err error) {
-        if !f.shut {
-                err = f.Shut()
+        if !f.isshut {
+                err = f.shut()
                 f.disk.donech <- f
         }
         return
@@ -601,13 +602,13 @@ func (f *File) Name() string {
 // TODO: extend func (f *File) to cover all os.File functions
 
 
-// ByOffset implements sort.Interface for sorting a slice of File
+// byoffset implements sort.Interface for sorting a slice of File
 // pointers by increasing Offset.
-type ByOffset []*File
+type byoffset []*File
 
-func (f ByOffset) Len() int           { return len(f) }
-func (f ByOffset) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f ByOffset) Less(i, j int) bool { return f[i].Offset < f[j].Offset }
+func (f byoffset) Len() int           { return len(f) }
+func (f byoffset) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
+func (f byoffset) Less(i, j int) bool { return f[i].Offset < f[j].Offset }
 
 
 type mergeptr struct {
@@ -617,7 +618,7 @@ type mergeptr struct {
 }
 
 // merge merges two sorted slices of *File
-func Merge(a []*File, b []*File) []*File {
+func merge(a []*File, b []*File) []*File {
                                 
         if len(a) == 0 {
                 return b
@@ -664,8 +665,3 @@ func Merge(a []*File, b []*File) []*File {
         return merged
 }
         
-
-// Implements Item interface for file offset
-func (f *File) Less(than *File) bool {
-        return f.Offset <= than.Offset
-}

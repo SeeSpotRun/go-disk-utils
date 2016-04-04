@@ -91,7 +91,7 @@ func FileCh(
         // canonicalise root dirs, removing duplicate paths
         rmap := make(map[string]bool)
         for _, root := range roots {
-                r, err := FixPath(filepath.Clean(root))
+                r, err := fixpath(filepath.Clean(root))
                 if err != nil {
                         errc <- err
                 }
@@ -132,7 +132,7 @@ func FileCh(
                                                 // TODO: add inode-based recursion test for OS's which support recursion
                                         }
                                         if (options & ReturnDirs) != 0 {
-                                                filec <- &File{UnFixPath(path), info}
+                                                filec <- &File{unfixpath(path), info}
                                         }
                                         return nil
                                 }
@@ -158,7 +158,7 @@ func FileCh(
 
                                 // Send result to filec unless done has been closed
                                 select{
-                                case filec <- &File{UnFixPath(path), info}:
+                                case filec <- &File{unfixpath(path), info}:
                                 case <-done:
                                         return errors.New("walk canceled")
                                 }
@@ -181,7 +181,7 @@ func FileCh(
 }
 
 
-func FixPath(p string) (string, error) {
+func fixpath(p string) (string, error) {
         var err error
         // clean path
         p, err = filepath.Abs(filepath.Clean(p))
@@ -192,7 +192,7 @@ func FixPath(p string) (string, error) {
         return p, err
 }
 
-func UnFixPath(p string) string {
+func unfixpath(p string) string {
         if runtime.GOOS == "windows" {
                 return strings.TrimPrefix(p, winLongPathHack)
         }

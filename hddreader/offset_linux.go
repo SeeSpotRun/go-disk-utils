@@ -65,13 +65,13 @@ func offsetf(f *os.File, seek uint64, whence int) (uint64, error) {
         }
 }
 
-// Offset returns the physical offset (relative to disk start) of
-// the data at the specified position within a file
-func Offset(path string, seek uint64, whence int) (uint64, error) {
+// offset returns the physical offset (relative to disk start) of
+// the data at the specified position within a file associated with a path
+func offset(path string, seek uint64, whence int) (uint64, error) {
         f, err := os.Open(path)
         if err != nil {
                 return 0, err
         }
         defer f.Close()
-        return OffsetFile(f, seek, whence)
+        return offsetf(f, seek, whence)
 }
