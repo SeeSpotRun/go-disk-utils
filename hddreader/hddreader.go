@@ -254,8 +254,7 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                                 reqs[len(reqs)-1] = nil
                                 reqs = reqs[:len(reqs)-1]
 
-                                // unblock pending read on popped file (respect MaxOpen too):
-                                self.poptik()
+                                // unblock pending read on popped file
                                 openFiles++
                                 popped.wg.Done()
                         }
@@ -557,7 +556,6 @@ func (f *File) shut() (err error) {
         // close the file
         err = f.file.Close()
         f.isshut = true
-        f.disk.pushtik()
 
         return
 }
