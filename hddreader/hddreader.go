@@ -352,7 +352,7 @@ func (d *Disk) Close() {
 // a File struct wraps an os.File stuct with the necessary field
 // and methods for hdd-optimised reads.
 type File struct {
-    *os.File
+    file   *os.File
     disk   *Disk
     size   int64   // file size in bytes (used for deciding how many read buffers)
     name   string  // duplicates *os.File.Name() since File may be closed
@@ -366,7 +366,7 @@ type File struct {
 // total open file count falls below the disk's open file limit.
 func Open(name string, disk *Disk) (*File, error) {
 
-        self := &File{File: nil, disk: disk, name: name, isshut: true}
+        self := &File{file: nil, disk: disk, name: name, isshut: true}
 
         // wait for open ticket
         disk.poptik()
@@ -378,7 +378,7 @@ func Open(name string, disk *Disk) (*File, error) {
                 return nil, err
         }
 
-        self.File = file
+        self.file = file
         info, err := file.Stat()
         if err == nil {
                 self.size = info.Size()
@@ -414,14 +414,14 @@ func (f *File) Read(b []byte) (n int, err error) {
                 return
         }
 
-        n, err = f.File.Read(b)
+        n, err = f.file.Read(b)
         if err != nil && err != io.EOF {
                 log.Printf("shut %s\n", f.name)
                 f.Close()
         }
 
         // TODO: would this help or is it an over-optimisation?:
-        // o, e := OffsetFile(f.File, 0, 0)
+        // o, e := OffsetFile(f.file, 0, 0)
         // if e == nil {
         //     f.Offset = o
         // }
@@ -432,7 +432,7 @@ func (f *File) Read(b []byte) (n int, err error) {
 // WriteTo implements io.WriterTo interface.
 func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
-        // open f.File for reading
+        // open f.file for reading
         err = f.open()
         if err != nil {
                 f.Close()
@@ -467,7 +467,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
                 for ; err == nil; {
                         b := f.disk.bufpool.get()
                         var m int
-                        m, err = f.File.Read(b)
+                        m, err = f.file.Read(b)
                         if err == nil || err == io.EOF {
                                 // send read data to the writer goroutine
                                 ch <- b[:m]
@@ -501,7 +501,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
         // if w impements the ReaderFrom interface then use w.ReadFrom()
         if w, ok := w.(io.ReaderFrom); ok {
-                m, err := w.ReadFrom(f.File)
+                m, err := w.ReadFrom(f.file)
                 n += m
                 // shut the underlying file
                 e := f.shut()
@@ -519,7 +519,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
         b := make([]byte, defaultBufSize)
         for ; err == nil; {
                 var nr int
-                nr, err = f.File.Read(b)
+                nr, err = f.file.Read(b)
                 if err == nil || err == io.EOF {
                         nw, e := w.Write(b[:nr])
                         n +=  int64(nw)
@@ -555,7 +555,7 @@ func (f *File) shut() (err error) {
         }
 
         // close the file
-        err = f.File.Close()
+        err = f.file.Close()
         f.isshut = true
         f.disk.pushtik()
 
@@ -573,7 +573,7 @@ func (f *File) open() (err error) {
                 f.disk.reqch <- f
                 f.wg.Wait()
 
-                f.File, err = os.Open(f.name)
+                f.file, err = os.Open(f.name)
                 if err != nil {
                         // failed to open, tell disk
                         f.disk.donech <- f
