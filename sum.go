@@ -1,6 +1,29 @@
-// hash is a demo main for the hddreader (and to a lesser extent, asyncwriter) package.
-// Various optimisations can be tuned or turned off.
+/**
+*  This file is part of go-disk-utils.
+*
+*  go-disk-utils is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  go-disk-utils are distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with rmlint.  If not, see <http://www.gnu.org/licenses/>.
+*
+** Authors:
+ *
+ *  - Daniel <SeeSpotRun> T.   2016-2016 (https://github.com/SeeSpotRun)
+ *
+** Hosted on https://github.com/SeeSpotRun/go-disk-utils
+*
+**/
 
+// sum is a demo main for the hddreader (and to a lesser extent, asyncwriter) package.
+// Various optimisations can be tuned or turned off.
 package main
 
 /*
@@ -8,7 +31,7 @@ package main
  * [ ] write sum_test
  * [ ] benchmarking & profiling
  * [x] switch from flag to docopt :-)
- * [ ] copyright etc
+ * [x] copyright etc
  * [ ] support multiple hashes
  * [ ] reflect settings in run summary
 */
@@ -104,7 +127,7 @@ Options:
   --whilewalk   Don't wait for folder walk to finish before starting hashing
   --buffer=<kB> Use a bufferpool to buffer disk reads
   --cpuprofile=<file>  Write cpu profile to file`
-
+        // add all available hash types to usage string
         for i, n := range(hashnames) {
                 if crypto.Hash(i).Available() {
                         usage = usage + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)

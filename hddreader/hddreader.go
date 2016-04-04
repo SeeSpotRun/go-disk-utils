@@ -1,3 +1,27 @@
+/**
+*  This file is part of go-disk-utils.
+*
+*  go-disk-utils is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  go-disk-utils are distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with rmlint.  If not, see <http://www.gnu.org/licenses/>.
+*
+** Authors:
+ *
+ *  - Daniel <SeeSpotRun> T.   2016-2016 (https://github.com/SeeSpotRun)
+ *
+** Hosted on https://github.com/SeeSpotRun/go-disk-utils
+*
+**/
+
 // Package hddreader wraps an os.File object with a algorithm which tries to optimise
 // parallel reading of multiple files from a hdd.  It does this by limiting number
 // of open files and reading files in order of disk offsets.
@@ -21,7 +45,7 @@ package hddreader
  * [ ] benchmarking
  * [ ] profiling
  * [ ] astyler or similar
- * [ ] copyright etc
+ * [x] copyright etc
 */
 
 import (

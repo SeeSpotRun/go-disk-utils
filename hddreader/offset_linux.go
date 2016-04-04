@@ -1,4 +1,27 @@
-// offset returns information about the physical location of a file on a disk.  It is part of the hddreader package.
+/**
+*  This file is part of go-disk-utils.
+*
+*  go-disk-utils is free software: you can redistribute it and/or modify
+*  it under the terms of the GNU General Public License as published by
+*  the Free Software Foundation, either version 3 of the License, or
+*  (at your option) any later version.
+*
+*  go-disk-utils are distributed in the hope that it will be useful,
+*  but WITHOUT ANY WARRANTY; without even the implied warranty of
+*  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*  GNU General Public License for more details.
+*
+*  You should have received a copy of the GNU General Public License
+*  along with rmlint.  If not, see <http://www.gnu.org/licenses/>.
+*
+** Authors:
+ *
+ *  - Daniel <SeeSpotRun> T.   2016-2016 (https://github.com/SeeSpotRun)
+ *
+** Hosted on https://github.com/SeeSpotRun/go-disk-utils
+*
+**/
+
 
 package hddreader
 
@@ -9,7 +32,9 @@ import (
 )
 
 
-func OffsetFile(f *os.File, seek uint64, whence int) (uint64, error) {
+// offset returns the physical offset (relative to disk start) of
+// the data at the specified position within a file
+func offsetf(f *os.File, seek uint64, whence int) (uint64, error) {
 
         switch {
         case whence == os.SEEK_CUR:
