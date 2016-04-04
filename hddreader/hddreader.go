@@ -26,7 +26,7 @@
 // parallel reading of multiple files from a hdd.  It does this by limiting number
 // of open files and reading files in order of disk offsets.
 // Main components:
-// File: file object, semi-interchangeable with io.File.  Implements: Reader, Closer, WriterTo
+// File: file object, semi-interchangeable with os.File.  Implements: Reader, Closer, WriterTo
 // Disk: disk object, schedules file reads
 // bufferpool: pool of reusable same-sized []byte buffers
 package hddreader
@@ -149,22 +149,38 @@ func (p *bufferpool) close() (used int, err error) {
 
 
 
-// a Disk schedules read operations for files
+// A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
+// to Disk.Start() is required before the disk will allow associated files to start
+// reading data.
+//
+// Example usage:
+//  d := hddreader.NewDisk(1, 0, 0, 0, 100, 64)
+//  for _, p := range(paths) {
+//          wg.Add(1)
+//          go read_stuff_from(p, &wg)
+//          // calls hddreader.OpenFile() and file.Read() but will block until d.Start() called
+//  }
+//  d.Start()  // enables reading and will unblock pending Read() calls in disk offset order
+//  wg.Wait()
+//  d.Close()
 type Disk struct {
         opench        chan struct{} // tickets to limit number of simultaneous files open
-        startch       chan struct{} // used to enable reading
         reqch         chan *File    // requests for read permission
         donech        chan *File    // signal that file has finished reading
         bufpool       *bufferpool   // reusable read buffers
+        startch       chan struct{} // used by disk.Start() to signal start of reading
+        wait          int           // how many pending reads to wait for before starting first read
 }
 
-// NewDisk creates a new disk object to schedule read operations.
-// maxread:   limits number of files simultaneously reading
-// maxwindow, ahead, behind : in addition to maxread, an additional maxwindow
-//            files may read simultaneously, provided their disk offsets are less
-//            than 'ahead' bytes ahead of or 'behind' bytes behind the disk's head position.
-// maxopen:   limits number of os.File objects simultaneously open
-// bufkB:     if >0, attach a bufferpool with max total kB = bufkB
+// NewDisk creates a new disk object to schedule read operations in order of increasing
+// physical offset on the disk.
+//
+// Up to maxread files will be read concurrently.  An additional up to maxwindow files
+// may be opened for reading if they are within (-behind,+ahead) bytes of
+// the current head position. An additional up to maxopen files may be open for the
+// sole purpose of reading disk offset.
+//
+// If bufkB > 0 then an internal buffer pool is created to buffer reads.
 func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int, bufkB int) *Disk {
 
         if maxread <= 0 {
@@ -195,8 +211,8 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
                     donech: make(chan(*File)), // TODO: does a buffer done channel improve speed?
                     }
 
-        if bufkB * 1024 > defaultBufSize {
-                self.bufpool = newbufferpool(defaultBufSize, defaultBufCount)
+        if bufkB > 0 {
+                self.bufpool = newbufferpool(defaultBufSize, 1 + (bufkB * 1024 - 1) / defaultBufSize)
         }
 
         // Populate opench (a buffered chanel to limit total concurrent Open() + Read() calls)
@@ -209,7 +225,6 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
 
         return self
 }
-
 
 func (self *Disk) Start()       {
         self.startch <- nothing{}
@@ -239,6 +254,7 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 
                         // find first file at-or-ahead of disk head position
                         i := sort.Search(len(reqs), func(i int) bool { return reqs[i].Offset >= offset })
+
 
                         // pop() pops a job from the queue and unblocks its read request
                         pop := func(i int) {
@@ -305,7 +321,6 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 
                 case  f := <- self.donech:
                         // a read job has finished; release pending requests accordingly
-
                         openFiles --
                         offset = f.Offset
                         release()
@@ -315,7 +330,6 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                 }
         }
         // clean-up after reqch closed
-        close(self.donech)
         if len(reqs) != 0 {
                 log.Printf("NON-ZERO OPEN FILES: %d\n", len(reqs))
         }
@@ -334,8 +348,6 @@ func (d *Disk) pushtik() {
 
 // Closes closes the disk scheduler and frees buffer memory
 func (d *Disk) Close() {
-        // TODO - close channels
-
         // close bufpool
         if d.bufpool != nil {
                 n, err := d.bufpool.close()
@@ -445,7 +457,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
                 // TODO: maybe need to flush any pending writes?
 
-                // write to writer will be in background goroutine
+                // writes to writer will be in background goroutine
                 var wg sync.WaitGroup
                 wg.Add(1)
                 var werr error // any error during writing
@@ -617,19 +629,19 @@ type mergeptr struct {
 
 // merge merges two sorted slices of *File
 func merge(a []*File, b []*File) []*File {
-                                
+
         if len(a) == 0 {
                 return b
         }
         if len(b) == 0 {
                 return a
         }
-        
+
         merged := make([]*File, 0, len(a) + len(b))
-        
+
         from:= &mergeptr{a, 0, 0} // next files will come from a
         then:= &mergeptr{b, 0, 0} // then from b
-        
+
         for ; from.i <= len(from.f) ; {
                 if from.i == len(from.f)  {
                         // from is finished, write remaining files
@@ -640,7 +652,7 @@ func merge(a []*File, b []*File) []*File {
                 if then.i == len(then.f)  {
                         panic("then.i == len(then.f)")
                 }
-                
+
                 if then.f[then.i].Offset < from.f[from.i].Offset {
                         // time to switch piles
                         merged = append(merged, from.f[from.i0:from.i]...)
@@ -662,4 +674,4 @@ func merge(a []*File, b []*File) []*File {
 
         return merged
 }
-        
+
