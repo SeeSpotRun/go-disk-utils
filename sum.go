@@ -32,7 +32,7 @@ package main
  * [ ] benchmarking & profiling
  * [x] switch from flag to docopt :-)
  * [x] copyright etc
- * [ ] support multiple hashes
+ * [x] support multiple hashes
  * [ ] reflect settings in run summary
 */
 
@@ -111,35 +111,49 @@ func main() {
 
         usage := `Usage:
     sum -h | --help
-    sum [options] [--open=N] <path>...
-    sum --hdd [--read=N] [--window=N] [--ahead=N] [--behind=N] [--max=N] [options] <path>...
-
+    sum [--open=N] [options] [hashtypes] <path>...
+    sum --hdd [--read=N] [--window=N] [--ahead=N] [--behind=N] [--max=N] [options] [hashtypes] <path>...
+`
+    options := `
 Options:
-  -h --help     Show this screen.
+  -h --help     Show this screen
+  --version     Show version
+Walk options:
   -r --recurse  Recurse paths if they are folders
-  -p --procs=N  Limit number of simultaneous processes (defaults to NumCPU)
+  --whilewalk   Don't wait for folder walk to finish before starting hashing
   --minsize=N   Ignore files smaller than N bytes [default: 1]
   --maxsize=N   Ignore files larger than N bytes [default: -1]
+System options:
+  -p --procs=N  Limit number of simultaneous processes (defaults to NumCPU)
+  --cpuprofile=<file>  Write cpu profile to file
   --open=N      Limit number of open file handles to N [default: 10]
+HDD options
   -d --hdd      Use hddreader to optimise reads
   --read=N      Limit number of files reading simultaneously [default: 1]
   --ahead=<kB>  Files within this many kB ahead of disk head ignore 'read' limit [default: 1024]
   --behind=<kB> Files within this many kB behind disk head ignore 'read' limit [default: 0]
   --window=N    Limit number of ahead/behind file exceptions [default: 5]
   --handles=N   Limit number of open file handles to N [default: 100]
-  --whilewalk   Don't wait for folder walk to finish before starting hashing
   --buffer=<kB> Use a bufferpool to buffer disk reads
-  --cpuprofile=<file>  Write cpu profile to file
+`
+    hashopts := `
+Hash types:
 `
         // add all available hash types to usage string
+        hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash (default)\n", hashnames[defaulthash], hashnames[defaulthash]    )
         for i, n := range(hashnames) {
-                if crypto.Hash(i).Available() {
-                        usage = usage + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
+                if i != int(defaulthash) && crypto.Hash(i).Available() {
+                        hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
                 }
         }
 
         // parse args
-        args, _ := docopt.Parse(usage, os.Args[1:], true, "sum 0.1", false, true)
+        args, err := docopt.Parse(usage + options + hashopts, os.Args[1:], false, "sum 0.1", false, false)
+        if err != nil {
+                fmt.Println(options + hashopts)
+                return
+        }
+        if len(args) == 0 { return }  // workaround for docopt not parsing other args if --version passed
 
         cpuprofile, ok := args["--cpuprofile"].(string)
         if ok {
