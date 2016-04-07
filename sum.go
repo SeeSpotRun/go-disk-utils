@@ -22,7 +22,7 @@
 *
 **/
 
-// sum is a demo main for the hddreader (and to a lesser extent, asyncwriter) package.
+// sum is a demo main for the hddreader package.
 // Various optimisations can be tuned or turned off.
 package main
 
@@ -42,6 +42,7 @@ import (
         _ "crypto/sha1"
         _ "crypto/sha256"
         _ "crypto/sha512"
+        "hash"
         "fmt"
         "os"
         "io"
@@ -61,7 +62,8 @@ import (
 
 
 // map hashname to crypto.Hash
-var hashtype crypto.Hash
+var hashtypes []crypto.Hash
+const defaulthash = crypto.SHA1
 var hashnames []string = []string{
         crypto.MD4:               "MD4",                // import golang.org/x/crypto/md4crypto.MD4
         crypto.MD5:               "MD5",                // import crypto/md5ypto.MD5
@@ -113,7 +115,7 @@ func main() {
 
 Options:
   -h --help     Show this screen.
-  -r --recurse  Recurse paths if they are folders (TODO)
+  -r --recurse  Recurse paths if they are folders
   -p --procs=N  Limit number of simultaneous processes (defaults to NumCPU)
   --minsize=N   Ignore files smaller than N bytes [default: 1]
   --maxsize=N   Ignore files larger than N bytes [default: -1]
@@ -150,9 +152,13 @@ Options:
 
 
         // set hash type[s]
-        hashtype := crypto.SHA1 // TODO: multi
-        if h, _ := args["--sha512"].(bool); h {
-                hashtype = crypto.SHA512
+        for i := range(hashnames) {
+                if y, _ := args["--" + hashnames[i]].(bool); y {
+                        hashtypes = append(hashtypes, crypto.Hash(i))
+                }
+        }
+        if len(hashtypes) == 0 {
+                hashtypes = append(hashtypes, defaulthash)
         }
         
         // set number of processes
@@ -176,7 +182,7 @@ Options:
                 windowlimit, _ := intarg("--window", args)
                 openlimit, _ := intarg("--handles", args)
                 disk = hddreader.NewDisk(readlimit, windowlimit, ahead * 1024, behind * 1024, openlimit, bufkB)
-                disk.Start()  // enables reading
+                disk.Start(0)  // enables reading
         } else {
                 // tickets limit number of active files when hdd==false
                 openlimit, _ := intarg("--open", args)
@@ -216,14 +222,29 @@ Options:
                 }
                 defer fi.Close()
 
-                // hash the file contents
-                h := hashtype.New()
-                _, err = io.Copy(h, fi)
+                // build a multiwriter to hash the file contents
+                w := make([]io.Writer, 0, len(hashtypes))
+                for _, t := range(hashtypes) {
+                        w = append(w, t.New())
+                }
+                m := io.MultiWriter(w...)
+
+
+                _, err = io.Copy(m, fi)
 
                 if err != nil {
                         log.Printf("Failed hashing %s", err)
                 } else {
-                        fmt.Printf("%x  %s\n", h.Sum(nil), path)
+                        // build a single line for output
+                        var results string
+                        for _, s := range(w) {
+                                sum, ok := s.(hash.Hash)
+                                if !ok {
+                                        panic("Can't cast io.Writer back to hash.Hash")
+                                }
+                                results = results + fmt.Sprintf("%x : ", sum.Sum(nil))
+                        }
+                        fmt.Printf("%s%s\n", results, path)
                 }
         }
 
