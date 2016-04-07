@@ -110,6 +110,7 @@ func main() {
         t1 := time.Now()
 
         usage := `Usage:
+    sum -h | --help
     sum [options] [--open=N] <path>...
     sum --hdd [--read=N] [--window=N] [--ahead=N] [--behind=N] [--max=N] [options] <path>...
 
@@ -128,7 +129,8 @@ Options:
   --handles=N   Limit number of open file handles to N [default: 100]
   --whilewalk   Don't wait for folder walk to finish before starting hashing
   --buffer=<kB> Use a bufferpool to buffer disk reads
-  --cpuprofile=<file>  Write cpu profile to file`
+  --cpuprofile=<file>  Write cpu profile to file
+`
         // add all available hash types to usage string
         for i, n := range(hashnames) {
                 if crypto.Hash(i).Available() {
@@ -136,9 +138,8 @@ Options:
                 }
         }
 
-
         // parse args
-        args, _ := docopt.Parse(usage, os.Args[1:], true, "sum 0.1", false)
+        args, _ := docopt.Parse(usage, os.Args[1:], true, "sum 0.1", false, true)
 
         cpuprofile, ok := args["--cpuprofile"].(string)
         if ok {
@@ -155,11 +156,14 @@ Options:
         for i := range(hashnames) {
                 if y, _ := args["--" + hashnames[i]].(bool); y {
                         hashtypes = append(hashtypes, crypto.Hash(i))
+                        fmt.Printf(fmt.Sprintf("%%%ds : ", crypto.Hash(i).Size() * 2), hashnames[i])
                 }
         }
         if len(hashtypes) == 0 {
                 hashtypes = append(hashtypes, defaulthash)
+                fmt.Printf(fmt.Sprintf("%%%ds :", defaulthash.Size() * 2), hashnames[defaulthash])
         }
+        fmt.Println()
         
         // set number of processes
         procs, ok := intarg("--procs", args)
@@ -287,8 +291,6 @@ Options:
                         pathmap[f.Path] = struct{}{}
                 }
         }
-
-        log.Printf("Walk time %d ms\n", time.Now().Sub(t1) / time.Millisecond)
 
         if !whilewalk {
                 for p := range(pathmap) {
