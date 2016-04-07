@@ -237,9 +237,6 @@ Options:
                 walkopts += walk.NoRecurse
         }
         
-        // channel to cancel walk (not used!):
-        donec := make(chan(struct{}))
-
         // error reporting during walk:
         errc := make(chan error)
         go func() {
@@ -252,7 +249,7 @@ Options:
         pathmap := make(map[string]struct{})
 
         // do the actual walk
-        for f := range(walk.FileCh(donec, errc, paths, walkopts)) {
+        for f := range(walk.FileCh(nil, errc, paths, walkopts)) {
                 // filter based on size
                 if maxsize >= 0 && f.Info.Size() > maxsize {
                         continue}

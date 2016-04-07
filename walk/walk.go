@@ -104,6 +104,11 @@ func FileCh(
         // create result channel
         filec := make(chan *File)
 
+        // be flexible with done channel
+        if done == nil {
+                done = make(chan(struct{}))
+        }
+
         // start goroutine for each root path
         var wg sync.WaitGroup
         for root := range rmap {
@@ -111,7 +116,9 @@ func FileCh(
                 go func(r string) {
                         e := filepath.Walk(r, func(path string, info os.FileInfo, err error) error {
                                 if err != nil {
-                                        errc <- err
+                                        if errc != nil {
+                                                errc <- err
+                                        }
                                         return nil
                                 }
 
@@ -146,7 +153,9 @@ func FileCh(
                                 if path != r {
                                         if rmap[path] == true {
                                                 // path double
-                                                errc <- errors.New("Skipping duplicate file " + path)
+                                                if errc != nil {
+                                                        errc <- errors.New("Skipping duplicate file " + path)
+                                                }
                                                 return nil
                                         }
                                         if (options & HiddenFiles) == 0 && strings.HasPrefix(info.Name(), ".") {
@@ -164,7 +173,7 @@ func FileCh(
                                 }
                                 return nil
                         })
-                        if e != nil {
+                        if e != nil && errc != nil {
                                 errc <- e
                         }
                         wg.Done()
