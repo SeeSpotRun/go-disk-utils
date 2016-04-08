@@ -41,6 +41,8 @@ package hddreader
  *     [x] sum (fast checksum calculator)
  *     [ ] grep
  *     [ ] match (duplicate detector)
+ * [ ] test hddreader performance impact on existing utilities
+ *     [ ] https://github.com/svent/sift
  * [ ] add bufio option?
  * [ ] benchmarking
  * [ ] profiling
