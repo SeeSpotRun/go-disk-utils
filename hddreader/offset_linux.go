@@ -32,46 +32,19 @@ import (
 )
 
 
-// offset returns the physical offset (relative to disk start) of
-// the data at the specified position within a file
-func offsetf(f *os.File, seek uint64, whence int) (uint64, error) {
-
-        switch {
-        case whence == os.SEEK_CUR:
-                // calculate required file offset without changing actual seek
-                current, err := f.Seek(0, 0)
-                if err != nil {
-                        return 0, err
-                }
-                seek = seek + uint64(current)
-        case whence == os.SEEK_END:
-                info, err := f.Stat()
-                if err != nil {
-                        return 0, err
-                }
-                seek = seek + uint64(info.Size())
-        }
-        
-        extents, errno := fibmap.NewFibmapFile(f).FiemapAt(1, seek)
+// offsetof returns the physical offset (relative to disk start) of
+// the data at the specified absolute position in an open file
+func offsetof(f *os.File, logical uint64) (uint64, error) {
+        extents, errno := fibmap.NewFibmapFile(f).FiemapAt(1, logical)
         if errno == 0 {
                 if len(extents) == 0 {
                         // there is no data for this range of the file - it's a hole?
-                        return 0, nil
+						return 0, nil
                 }
-                // adjust retulst for file seek position relative to start of extent
-                return extents[0].Physical + seek - extents[0].Logical, nil
+                // get result from first extent with adjustment for logical position relative to start of extent
+				return extents[0].Physical + logical - extents[0].Logical, nil
         } else {
-                return 0, errno
+                return 0, errno // converts errno to go err
         }
-}
 
-// offset returns the physical offset (relative to disk start) of
-// the data at the specified position within a file associated with a path
-func offset(path string, seek uint64, whence int) (uint64, error) {
-        f, err := os.Open(path)
-        if err != nil {
-                return 0, err
-        }
-        defer f.Close()
-        return offsetf(f, seek, whence)
 }

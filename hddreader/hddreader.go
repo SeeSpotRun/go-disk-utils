@@ -398,29 +398,13 @@ func Open(name string, disk *Disk) (*File, error) {
         disk.poptik()
         defer disk.pushtik()
 
-        // try to open os.File
-        file, err := os.Open(name)
+		var err error
+		self.Offset, _, self.size, err = offset(name, 0, 0)
         if err != nil {
                 return nil, err
         }
 
-        self.file = file
-        info, err := file.Stat()
-        if err == nil {
-                self.size = info.Size()
-        }
-
-        // read file's location on disk
-        self.Offset, err = offsetf(file, 0, 0)
-        if err != nil {
-                // not fatal, just inconvenient...
-                log.Printf("hddreader Open(): %s\n", err)
-        }
-
-        // close the underlying file
-        err = file.Close()
         return self, err
-
 }
 
 func OpenFile(name string, flag int, perm os.FileMode, disk *Disk, keepOpen bool) (*File, error) {
