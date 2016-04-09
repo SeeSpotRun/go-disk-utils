@@ -3,7 +3,7 @@
 package hddreader
 
 import (
-	"log"
+	//"log"
 	"os"
 	"syscall"
 	"unsafe"
@@ -49,7 +49,7 @@ type starting_vcn_input_buffer struct {
 
 // offsetof returns the physical offset (relative to disk start) of
 // the data at the specified absolute position in an open file
-func offsetof(f *os.File, logical uint64) (uint64, error) {
+func offsetof(f *os.File, logical uint64, bytespersector uint64) (uint64, error) {
 
 	//fd := syscall.Handle(f.Fd())
 	fd, err := syscall.Open(f.Name(), os.O_RDONLY|syscall.O_CLOEXEC, 0)
@@ -68,7 +68,7 @@ func offsetof(f *os.File, logical uint64) (uint64, error) {
 
 	var bytesreturned uint32
 	var startingvcn starting_vcn_input_buffer
-	startingvcn.startingvcn.set(0)
+	startingvcn.startingvcn.set(int64(logical / bytespersector))
 
 	err = syscall.DeviceIoControl(fd,
 		fsctl_get_retrieval_pointers,
@@ -83,6 +83,6 @@ func offsetof(f *os.File, logical uint64) (uint64, error) {
 		return 0, err
 	}
 
-	log.Printf(" %d %d %d %d %d \n", bytesreturned, extents[0].lcn.get(), extents[0].nextvcn.get(), extents[1].lcn.get(), extents[1].nextvcn.get())
-	return uint64(extents[1].lcn.get()), nil
+	//log.Printf(" %d %d %d %d %d \n", bytesreturned, extents[0].lcn.get(), extents[0].nextvcn.get(), extents[1].lcn.get(), extents[1].nextvcn.get())
+	return uint64(extents[1].lcn.get()) * bytespersector, nil
 }

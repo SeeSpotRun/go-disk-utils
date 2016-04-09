@@ -170,6 +170,7 @@ type Disk struct {
 	bufpool *bufferpool   // reusable read buffers
 	startch chan struct{} // used by disk.Start() to signal start of reading
 	wait    int           // how many pending reads to wait for before starting first read
+	bps     uint64        // how many bytes per disk sector (needed for Windows offset calcs)
 }
 
 // NewDisk creates a new disk object to schedule read operations in order of increasing
@@ -392,7 +393,7 @@ func Open(name string, disk *Disk) (*File, error) {
 	defer disk.pushtik()
 
 	var err error
-	self.Offset, _, self.size, err = offset(name, 0, 0)
+	self.Offset, _, self.size, err = offset(name, 0, 0, disk.getbps(name))
 	if err != nil {
 		return nil, err
 	}
