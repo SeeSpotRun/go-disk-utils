@@ -3,12 +3,12 @@
 package walk_test
 
 import (
-        "testing"
-        "path/filepath"
-        "os"
-        "walk"
-        "strings"
-        "sync"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"walk"
 )
 
 type Node struct {
@@ -21,9 +21,9 @@ var tree = &Node{
 	"testdata",
 	[]*Node{
 		{"a", nil, 0},
-		{".b", []*Node {
-                        {"w", nil, 0},  // file in hidden dir
-                        }, 0},
+		{".b", []*Node{
+			{"w", nil, 0}, // file in hidden dir
+		}, 0},
 		{"c", nil, 0},
 		{
 			"d",
@@ -31,7 +31,7 @@ var tree = &Node{
 				{".x", nil, 0}, // hidden file
 				{"y", []*Node{}, 0},
 				{
-					strings.Repeat("z", 150),  // makes total path > 260 char windows limit
+					strings.Repeat("z", 150), // makes total path > 260 char windows limit
 					[]*Node{
 						{strings.Repeat("u", 150), nil, 0},
 						{"v", nil, 0},
@@ -53,10 +53,10 @@ func walkTree(n *Node, path string, f func(path string, n *Node)) {
 }
 
 func makeTree(t *testing.T) {
-        root, err := walk.FixPath(tree.name)
-        if err != nil {
-                t.Fatalf("Error in FixPath: %s", err)
-        }
+	root, err := walk.FixPath(tree.name)
+	if err != nil {
+		t.Fatalf("Error in FixPath: %s", err)
+	}
 	walkTree(tree, root, func(path string, n *Node) {
 		if n.entries == nil {
 			fd, err := os.Create(path)
@@ -71,99 +71,95 @@ func makeTree(t *testing.T) {
 	})
 }
 
-
 func TestFileCh(t *testing.T) {
 	makeTree(t)
-        
-        donec := make(chan struct{})
-        
-        root, err := walk.FixPath(tree.name)
-        if err != nil {
-                t.Fatalf("Error in FixPath: %s", err)
-        }
-        
-        
-        type testCase struct {
-                options uint
-                desc string
-                roots []string
-                expectfiles int
-                expecterrors int
-        }
 
-        var tests = []testCase{
-                testCase{walk.Defaults,
-                        "defaults",
-                        []string{tree.name},
-                        4, 0},
-                testCase{walk.HiddenFiles,
-                        "hidden files",
-                        []string{tree.name},
-                        5, 0},
-                testCase{walk.HiddenDirs, 
-                        "hidden dirs",
-                        []string{tree.name},
-                        5, 0},
-                testCase{walk.HiddenDirs + walk.HiddenFiles,
-                        "hidden dirs and files",
-                        []string{tree.name},
-                        6, 0},
-                testCase{walk.Defaults,
-                        "repeated path path",
-                        []string{tree.name, tree.name },
-                        4, 0},
-                testCase{walk.Defaults,
-                        "overlapping path",
-                        []string{tree.name, tree.name + "/d" },
-                        4, 1},
-                testCase{walk.Defaults,
-                        "nonexistent path",
-                        []string{tree.name, tree.name + "/m" },
-                        4, 1},
-                testCase{walk.Defaults,
-                        "repeated path with trailing '/'",
-                        []string{tree.name, tree.name + "/" },
-                        4, 0},
-                testCase{walk.Defaults,
-                        "trailing '/'",
-                        []string{tree.name + "/" },
-                        4, 0},
-                testCase{walk.Defaults,
-                        "hidden root",
-                        []string{tree.name + "/.b", tree.name},
-                        5, 0},
-                }
+	donec := make(chan struct{})
 
-        
-        for _, tc := range(tests) {
-                files := []*walk.File{}
-                errors := []error{}
-                errc := make(chan error)
-                var wg sync.WaitGroup
-                wg.Add(1)
-                go func() {
-                        for e := range(errc) {
-                                errors = append(errors, e)
-                        }
-                        wg.Done()
-                }()
-                for f := range(walk.FileCh(donec, errc, tc.roots, tc.options)) {
-                        files = append(files, f)
-                }
-                close(errc)
-                
-                if len(files) != tc.expectfiles {
-                        t.Errorf("Option %s: expected %d files, got %d", tc.desc, tc.expectfiles, len(files))
-                }
-                
-                wg.Wait()
-                if len(errors) != tc.expecterrors{
-                        t.Errorf("Option %s: expected %d errors, got %d", tc.desc, tc.expecterrors, len(errors))
-                }
-        }
-        
-        
-        // cleanup
+	root, err := walk.FixPath(tree.name)
+	if err != nil {
+		t.Fatalf("Error in FixPath: %s", err)
+	}
+
+	type testCase struct {
+		options      uint
+		desc         string
+		roots        []string
+		expectfiles  int
+		expecterrors int
+	}
+
+	var tests = []testCase{
+		testCase{walk.Defaults,
+			"defaults",
+			[]string{tree.name},
+			4, 0},
+		testCase{walk.HiddenFiles,
+			"hidden files",
+			[]string{tree.name},
+			5, 0},
+		testCase{walk.HiddenDirs,
+			"hidden dirs",
+			[]string{tree.name},
+			5, 0},
+		testCase{walk.HiddenDirs + walk.HiddenFiles,
+			"hidden dirs and files",
+			[]string{tree.name},
+			6, 0},
+		testCase{walk.Defaults,
+			"repeated path path",
+			[]string{tree.name, tree.name},
+			4, 0},
+		testCase{walk.Defaults,
+			"overlapping path",
+			[]string{tree.name, tree.name + "/d"},
+			4, 1},
+		testCase{walk.Defaults,
+			"nonexistent path",
+			[]string{tree.name, tree.name + "/m"},
+			4, 1},
+		testCase{walk.Defaults,
+			"repeated path with trailing '/'",
+			[]string{tree.name, tree.name + "/"},
+			4, 0},
+		testCase{walk.Defaults,
+			"trailing '/'",
+			[]string{tree.name + "/"},
+			4, 0},
+		testCase{walk.Defaults,
+			"hidden root",
+			[]string{tree.name + "/.b", tree.name},
+			5, 0},
+	}
+
+	for _, tc := range tests {
+		files := []*walk.File{}
+		errors := []error{}
+		errc := make(chan error)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			for e := range errc {
+				errors = append(errors, e)
+			}
+			wg.Done()
+		}()
+		for f := range walk.FileCh(donec, errc, tc.roots, tc.options) {
+			files = append(files, f)
+		}
+		close(errc)
+
+		if len(files) != tc.expectfiles {
+			t.Errorf("Option %s: expected %d files, got %d", tc.desc, tc.expectfiles, len(files))
+		}
+
+		wg.Wait()
+		if len(errors) != tc.expecterrors {
+			t.Errorf("Option %s: expected %d errors, got %d", tc.desc, tc.expecterrors, len(errors))
+		}
+	}
+
+	// cleanup
 	if err := os.RemoveAll(root); err != nil {
 		t.Errorf("removeTree: %v", err)
 	}

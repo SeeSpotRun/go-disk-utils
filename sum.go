@@ -34,87 +34,84 @@ package main
  * [x] copyright etc
  * [x] support multiple hashes
  * [ ] reflect settings in run summary
-*/
+ */
 
 import (
-        "crypto"
-        _ "crypto/md5"
-        _ "crypto/sha1"
-        _ "crypto/sha256"
-        _ "crypto/sha512"
-        "hash"
-        "fmt"
-        "os"
-        "io"
-        "runtime"
-        "runtime/pprof"
-        "log"
-        "time"
-        "sync"
-        "strconv"
-        //
-        "github.com/docopt/docopt-go"
-        // local packages:
-        "github.com/SeeSpotRun/go-disk-utils/walk"
-        "github.com/SeeSpotRun/go-disk-utils/hddreader"
+	"crypto"
+	_ "crypto/md5"
+	_ "crypto/sha1"
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+	"fmt"
+	"hash"
+	"io"
+	"log"
+	"os"
+	"runtime"
+	"runtime/pprof"
+	"strconv"
+	"sync"
+	"time"
+	//
+	"github.com/docopt/docopt-go"
+	// local packages:
+	"github.com/SeeSpotRun/go-disk-utils/hddreader"
+	"github.com/SeeSpotRun/go-disk-utils/walk"
 )
-
-
 
 // map hashname to crypto.Hash
 var hashtypes []crypto.Hash
+
 const defaulthash = crypto.SHA1
+
 var hashnames []string = []string{
-        crypto.MD4:               "MD4",                // import golang.org/x/crypto/md4crypto.MD4
-        crypto.MD5:               "MD5",                // import crypto/md5ypto.MD5
-        crypto.SHA1:              "SHA1",               // import crypto/sha1ypto.SHA1
-        crypto.SHA224:            "SHA224",             // import crypto/sha256
-        crypto.SHA256:            "SHA256",             // import crypto/sha256
-        crypto.SHA384:            "SHA384",             // import crypto/sha512
-        crypto.SHA512:            "SHA512",             // import crypto/sha512
-        crypto.MD5SHA1:           "MD5SHA1",            // no implementation; MD5+SHA1 used for TLS RSA
-        crypto.RIPEMD160:         "RIPEMD160",          // import golang.org/x/crypto/ripemd160
-        crypto.SHA3_224:          "SHA3_224",           // import golang.org/x/crypto/sha3
-        crypto.SHA3_256:          "SHA3_256",           // import golang.org/x/crypto/sha3
-        crypto.SHA3_384:          "SHA3_384",           // import golang.org/x/crypto/sha3
-        crypto.SHA3_512:          "SHA3_512",           // import golang.org/x/crypto/sha3
-        crypto.SHA512_224:        "SHA512_224",         // import crypto/sha512
-        crypto.SHA512_256:        "SHA512_256",         // import crypto/sha512
+	crypto.MD4:        "MD4",        // import golang.org/x/crypto/md4crypto.MD4
+	crypto.MD5:        "MD5",        // import crypto/md5ypto.MD5
+	crypto.SHA1:       "SHA1",       // import crypto/sha1ypto.SHA1
+	crypto.SHA224:     "SHA224",     // import crypto/sha256
+	crypto.SHA256:     "SHA256",     // import crypto/sha256
+	crypto.SHA384:     "SHA384",     // import crypto/sha512
+	crypto.SHA512:     "SHA512",     // import crypto/sha512
+	crypto.MD5SHA1:    "MD5SHA1",    // no implementation; MD5+SHA1 used for TLS RSA
+	crypto.RIPEMD160:  "RIPEMD160",  // import golang.org/x/crypto/ripemd160
+	crypto.SHA3_224:   "SHA3_224",   // import golang.org/x/crypto/sha3
+	crypto.SHA3_256:   "SHA3_256",   // import golang.org/x/crypto/sha3
+	crypto.SHA3_384:   "SHA3_384",   // import golang.org/x/crypto/sha3
+	crypto.SHA3_512:   "SHA3_512",   // import golang.org/x/crypto/sha3
+	crypto.SHA512_224: "SHA512_224", // import crypto/sha512
+	crypto.SHA512_256: "SHA512_256", // import crypto/sha512
 }
-
-
 
 //////////////////////////////////////////////////////////////////
 
-
 func int64arg(a string, args map[string]interface{}) (result int64, ok bool) {
-        var s string
-        s, ok = args[a].(string)
-        if ok {
-                var err error
-                result, err = strconv.ParseInt(s, 10, 64)
-                ok = err==nil
-        }
-        return
+	var s string
+	s, ok = args[a].(string)
+	if ok {
+		var err error
+		result, err = strconv.ParseInt(s, 10, 64)
+		ok = err == nil
+	}
+	return
 }
 
 func intarg(a string, args map[string]interface{}) (result int, ok bool) {
-        r, ok := int64arg(a, args)
-        result = int(r)
-        return
+	r, ok := int64arg(a, args)
+	result = int(r)
+	return
 }
 
 func main() {
 
-        // start timer...
-        t1 := time.Now()
+	// start timer...
+	t1 := time.Now()
 
-        usage := `Usage:
+	usage := `Usage:
     sum -h | --help
     sum [--open=N] [options] [hashtypes] <path>...
     sum --hdd [--read=N] [--window=N] [--ahead=N] [--behind=N] [--max=N] [options] [hashtypes] <path>...
 `
-    options := `
+	options := `
 Options:
   -h --help     Show this screen
   --version     Show version
@@ -136,191 +133,191 @@ HDD options
   --handles=N   Limit number of open file handles to N [default: 100]
   --buffer=<kB> Use a bufferpool to buffer disk reads
 `
-    hashopts := `
+	hashopts := `
 Hash types:
 `
-        // add all available hash types to usage string
-        hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash (default)\n", hashnames[defaulthash], hashnames[defaulthash]    )
-        for i, n := range(hashnames) {
-                if i != int(defaulthash) && crypto.Hash(i).Available() {
-                        hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
-                }
-        }
+	// add all available hash types to usage string
+	hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash (default)\n", hashnames[defaulthash], hashnames[defaulthash])
+	for i, n := range hashnames {
+		if i != int(defaulthash) && crypto.Hash(i).Available() {
+			hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
+		}
+	}
 
-        // parse args
-        args, err := docopt.Parse(usage + options + hashopts, os.Args[1:], false, "sum 0.1", false, false)
-        if err != nil {
-                fmt.Println(options + hashopts)
-                return
-        }
-        if len(args) == 0 { return }  // workaround for docopt not parsing other args if --version passed
+	// parse args
+	args, err := docopt.Parse(usage+options+hashopts, os.Args[1:], false, "sum 0.1", false, false)
+	if err != nil {
+		fmt.Println(options + hashopts)
+		return
+	}
+	if len(args) == 0 {
+		return
+	} // workaround for docopt not parsing other args if --version passed
 
-        cpuprofile, ok := args["--cpuprofile"].(string)
-        if ok {
-                f, err := os.Create(cpuprofile)
-                if err != nil {
-                        panic(err)
-                }
-                pprof.StartCPUProfile(f)
-                defer pprof.StopCPUProfile()
-        }
+	cpuprofile, ok := args["--cpuprofile"].(string)
+	if ok {
+		f, err := os.Create(cpuprofile)
+		if err != nil {
+			panic(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
+	// set hash type[s]
+	for i := range hashnames {
+		if y, _ := args["--"+hashnames[i]].(bool); y {
+			hashtypes = append(hashtypes, crypto.Hash(i))
+			fmt.Printf(fmt.Sprintf("%%%ds : ", crypto.Hash(i).Size()*2), hashnames[i])
+		}
+	}
+	if len(hashtypes) == 0 {
+		hashtypes = append(hashtypes, defaulthash)
+		fmt.Printf(fmt.Sprintf("%%%ds :", defaulthash.Size()*2), hashnames[defaulthash])
+	}
+	fmt.Println()
 
-        // set hash type[s]
-        for i := range(hashnames) {
-                if y, _ := args["--" + hashnames[i]].(bool); y {
-                        hashtypes = append(hashtypes, crypto.Hash(i))
-                        fmt.Printf(fmt.Sprintf("%%%ds : ", crypto.Hash(i).Size() * 2), hashnames[i])
-                }
-        }
-        if len(hashtypes) == 0 {
-                hashtypes = append(hashtypes, defaulthash)
-                fmt.Printf(fmt.Sprintf("%%%ds :", defaulthash.Size() * 2), hashnames[defaulthash])
-        }
-        fmt.Println()
-        
-        // set number of processes
-        procs, ok := intarg("--procs", args)
-        if ok {
-                runtime.GOMAXPROCS(procs)
-        } else {
-                runtime.GOMAXPROCS(runtime.NumCPU())
-        }
-                
-        // set up scheduler based on user args...
-        hdd, ok := args["--hdd"].(bool);
-        var disk *hddreader.Disk
-        var tickets chan struct{}
-        if  ok && hdd {
-                // disk does scheduling if option hdd == true
-                bufkB, _ := intarg("--buffer", args)
-                ahead, _ := int64arg("--ahead", args)
-                behind, _ := int64arg("--behind", args)
-                readlimit, _ := intarg("--read", args)
-                windowlimit, _ := intarg("--window", args)
-                openlimit, _ := intarg("--handles", args)
-                disk = hddreader.NewDisk(readlimit, windowlimit, ahead * 1024, behind * 1024, openlimit, bufkB)
-                disk.Start(0)  // enables reading
-        } else {
-                // tickets limit number of active files when hdd==false
-                openlimit, _ := intarg("--open", args)
-                if openlimit <= 0 {
-                        panic("Need --open > 0")
-                }
-                tickets = make(chan(struct{}), int(openlimit))
-                for i:=0; i<int(openlimit); i++ {
-                        tickets <- struct{}{}
-                }
-        }
+	// set number of processes
+	procs, ok := intarg("--procs", args)
+	if ok {
+		runtime.GOMAXPROCS(procs)
+	} else {
+		runtime.GOMAXPROCS(runtime.NumCPU())
+	}
 
-        var wg sync.WaitGroup // callback for sum() calls
+	// set up scheduler based on user args...
+	hdd, ok := args["--hdd"].(bool)
+	var disk *hddreader.Disk
+	var tickets chan struct{}
+	if ok && hdd {
+		// disk does scheduling if option hdd == true
+		bufkB, _ := intarg("--buffer", args)
+		ahead, _ := int64arg("--ahead", args)
+		behind, _ := int64arg("--behind", args)
+		readlimit, _ := intarg("--read", args)
+		windowlimit, _ := intarg("--window", args)
+		openlimit, _ := intarg("--handles", args)
+		disk = hddreader.NewDisk(readlimit, windowlimit, ahead*1024, behind*1024, openlimit, bufkB)
+		disk.Start(0) // enables reading
+	} else {
+		// tickets limit number of active files when hdd==false
+		openlimit, _ := intarg("--open", args)
+		if openlimit <= 0 {
+			panic("Need --open > 0")
+		}
+		tickets = make(chan (struct{}), int(openlimit))
+		for i := 0; i < int(openlimit); i++ {
+			tickets <- struct{}{}
+		}
+	}
 
-        // sum(path) hash file contents and prints results
-        sum := func(path string) {
-                defer wg.Done()
+	var wg sync.WaitGroup // callback for sum() calls
 
-                var fi io.ReadCloser
-                var err error
+	// sum(path) hash file contents and prints results
+	sum := func(path string) {
+		defer wg.Done()
 
-                if hdd {
-                        // open the file using hddreader as limiter
-                        fi, err = hddreader.Open(path, disk)
-                } else {
-                        // use tickets channel to limit number of open files
-                        _ = <- tickets
-                        defer func() {
-                                tickets <- struct{}{}
-                        }()
-                        fi, err = os.Open(path)
-                }
+		var fi io.ReadCloser
+		var err error
 
-                if err != nil {
-                        log.Printf("Could not open %s: %s\n", path, err)
-                        return
-                }
-                defer fi.Close()
+		if hdd {
+			// open the file using hddreader as limiter
+			fi, err = hddreader.Open(path, disk)
+		} else {
+			// use tickets channel to limit number of open files
+			_ = <-tickets
+			defer func() {
+				tickets <- struct{}{}
+			}()
+			fi, err = os.Open(path)
+		}
 
-                // build a multiwriter to hash the file contents
-                w := make([]io.Writer, 0, len(hashtypes))
-                for _, t := range(hashtypes) {
-                        w = append(w, t.New())
-                }
-                m := io.MultiWriter(w...)
+		if err != nil {
+			log.Printf("Could not open %s: %s\n", path, err)
+			return
+		}
+		defer fi.Close()
 
+		// build a multiwriter to hash the file contents
+		w := make([]io.Writer, 0, len(hashtypes))
+		for _, t := range hashtypes {
+			w = append(w, t.New())
+		}
+		m := io.MultiWriter(w...)
 
-                _, err = io.Copy(m, fi)
+		_, err = io.Copy(m, fi)
 
-                if err != nil {
-                        log.Printf("Failed hashing %s", err)
-                } else {
-                        // build a single line for output
-                        var results string
-                        for _, s := range(w) {
-                                sum, ok := s.(hash.Hash)
-                                if !ok {
-                                        panic("Can't cast io.Writer back to hash.Hash")
-                                }
-                                results = results + fmt.Sprintf("%x : ", sum.Sum(nil))
-                        }
-                        fmt.Printf("%s%s\n", results, path)
-                }
-        }
+		if err != nil {
+			log.Printf("Failed hashing %s", err)
+		} else {
+			// build a single line for output
+			var results string
+			for _, s := range w {
+				sum, ok := s.(hash.Hash)
+				if !ok {
+					panic("Can't cast io.Writer back to hash.Hash")
+				}
+				results = results + fmt.Sprintf("%x : ", sum.Sum(nil))
+			}
+			fmt.Printf("%s%s\n", results, path)
+		}
+	}
 
-        // set up for walk...
-        paths, ok := args["<path>"].([]string)
-        maxsize, ok := int64arg("--maxsize", args)
-        minsize, ok := int64arg("--minsize", args)
-        whilewalk, ok := args["--whilewalk"].(bool)
-        walkopts := walk.Defaults
-        if recurse, _ := args["--recurse"].(bool); !recurse {
-                walkopts += walk.NoRecurse
-        }
-        
-        // error reporting during walk:
-        errc := make(chan error)
-        go func() {
-                for err := range errc {
-                        log.Printf("Walk error: %s\n", err)
-                }
-        }()
+	// set up for walk...
+	paths, ok := args["<path>"].([]string)
+	maxsize, ok := int64arg("--maxsize", args)
+	minsize, ok := int64arg("--minsize", args)
+	whilewalk, ok := args["--whilewalk"].(bool)
+	walkopts := walk.Defaults
+	if recurse, _ := args["--recurse"].(bool); !recurse {
+		walkopts += walk.NoRecurse
+	}
 
-        // map for paths collected during walk
-        pathmap := make(map[string]struct{})
+	// error reporting during walk:
+	errc := make(chan error)
+	go func() {
+		for err := range errc {
+			log.Printf("Walk error: %s\n", err)
+		}
+	}()
 
-        // do the actual walk
-        for f := range(walk.FileCh(nil, errc, paths, walkopts)) {
-                // filter based on size
-                if maxsize >= 0 && f.Info.Size() > maxsize {
-                        continue}
-                if f.Info.Size() < minsize {
-                        continue
-                }
+	// map for paths collected during walk
+	pathmap := make(map[string]struct{})
 
-                if whilewalk {
-                        // start processing immediately
-                        wg.Add(1)
-                        go sum(f.Path)
-                } else {
-                        // process after walk finished
-                        pathmap[f.Path] = struct{}{}
-                }
-        }
+	// do the actual walk
+	for f := range walk.FileCh(nil, errc, paths, walkopts) {
+		// filter based on size
+		if maxsize >= 0 && f.Info.Size() > maxsize {
+			continue
+		}
+		if f.Info.Size() < minsize {
+			continue
+		}
 
-        if !whilewalk {
-                for p := range(pathmap) {
-                        wg.Add(1)
-                        go sum(p)
-                }
-        }
+		if whilewalk {
+			// start processing immediately
+			wg.Add(1)
+			go sum(f.Path)
+		} else {
+			// process after walk finished
+			pathmap[f.Path] = struct{}{}
+		}
+	}
 
-        // wait for all sum() goroutines to finish
-        wg.Wait()
+	if !whilewalk {
+		for p := range pathmap {
+			wg.Add(1)
+			go sum(p)
+		}
+	}
 
-        if hdd {
-                disk.Close()
-        }
-        
-        log.Printf("Total time %d ms\n", time.Now().Sub(t1) / time.Millisecond)
+	// wait for all sum() goroutines to finish
+	wg.Wait()
+
+	if hdd {
+		disk.Close()
+	}
+
+	log.Printf("Total time %d ms\n", time.Now().Sub(t1)/time.Millisecond)
 
 }
-

@@ -27,6 +27,7 @@
 // don't want to think too much about symlinks, recursion, hidden file
 // handling, etc.
 package walk
+
 /*
  * TODO:
  * [x] write walk_test
@@ -38,37 +39,37 @@ package walk
  * [ ] add OneDevice option
  * [ ] add depth limiter
  * [ ] inode-based recursion test
-*/
+ */
 
-import(
-        "os"
-        "path/filepath"
-        "errors"
-        "runtime"
-        "sync"
-        "strings"
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 )
 
 // Option flags for walking; add to options to change default behaviour
-const(
-        Defaults        = 0
-        // TODO: SeeRootLinks    = 1     // default: if root paths are symlinks they will be ignored
-        // TODO: SeeLinks        = 2     // default: all symlinks (except root links) will be ignored
-        // TODO: FollowLinks     = 4     // default: returns 'seen' symlinks as symlinks instead of following links
-        // TODO: SeeDotFiles     = 8     // default: ignores '.' and '..' dir entries TODO
-        HiddenDirs      = 16    // default: won't descend into folders starting with '.'
-        HiddenFiles     = 32    // default: won't return files starting with '.'
-        ReturnDirs      = 64    // default: doesn't return dir paths (note: never returns root dirs)
-        NoRecurse       = 128   // default: walks subdirs recursively
-        //TODO: OneDevice       = 256   // default: walk will cross filesystem boundaries TODO
+const (
+	Defaults = 0
+	// TODO: SeeRootLinks    = 1     // default: if root paths are symlinks they will be ignored
+	// TODO: SeeLinks        = 2     // default: all symlinks (except root links) will be ignored
+	// TODO: FollowLinks     = 4     // default: returns 'seen' symlinks as symlinks instead of following links
+	// TODO: SeeDotFiles     = 8     // default: ignores '.' and '..' dir entries TODO
+	HiddenDirs  = 16  // default: won't descend into folders starting with '.'
+	HiddenFiles = 32  // default: won't return files starting with '.'
+	ReturnDirs  = 64  // default: doesn't return dir paths (note: never returns root dirs)
+	NoRecurse   = 128 // default: walks subdirs recursively
+	//TODO: OneDevice       = 256   // default: walk will cross filesystem boundaries TODO
 )
 
 const winLongPathLimit = 259
-const winLongPathHack = "\\\\?\\"    // workaround prefix for windows 260-character path limit
+const winLongPathHack = "\\\\?\\" // workaround prefix for windows 260-character path limit
 
 type File struct {
-        Path string
-        Info os.FileInfo
+	Path string
+	Info os.FileInfo
 }
 
 // FileCh returns a file channel and walks (concurrently) all paths under
@@ -82,128 +83,127 @@ type File struct {
 // they are members of []roots.
 // If done is closed, FileCh() aborts the walk(s) and closes the file channel.
 func FileCh(
-        done <-chan struct{},
-        errc chan <- error,
-        roots []string,
-        options int,
-        ) <-chan *File {
+	done <-chan struct{},
+	errc chan<- error,
+	roots []string,
+	options int,
+) <-chan *File {
 
-        // canonicalise root dirs, removing duplicate paths
-        rmap := make(map[string]bool)
-        for _, root := range roots {
-                r, err := fixpath(filepath.Clean(root))
-                if err != nil {
-                        errc <- err
-                }
-                if _, ok := rmap[r]; !ok {
-                    // no match; add root to set
-                    rmap[r] = true
-                }
-        }
+	// canonicalise root dirs, removing duplicate paths
+	rmap := make(map[string]bool)
+	for _, root := range roots {
+		r, err := fixpath(filepath.Clean(root))
+		if err != nil {
+			errc <- err
+		}
+		if _, ok := rmap[r]; !ok {
+			// no match; add root to set
+			rmap[r] = true
+		}
+	}
 
-        // create result channel
-        filec := make(chan *File)
+	// create result channel
+	filec := make(chan *File)
 
-        // be flexible with done channel
-        if done == nil {
-                done = make(chan(struct{}))
-        }
+	// be flexible with done channel
+	if done == nil {
+		done = make(chan (struct{}))
+	}
 
-        // start goroutine for each root path
-        var wg sync.WaitGroup
-        for root := range rmap {
-                wg.Add(1)
-                go func(r string) {
-                        e := filepath.Walk(r, func(path string, info os.FileInfo, err error) error {
-                                if err != nil {
-                                        if errc != nil {
-                                                errc <- err
-                                        }
-                                        return nil
-                                }
+	// start goroutine for each root path
+	var wg sync.WaitGroup
+	for root := range rmap {
+		wg.Add(1)
+		go func(r string) {
+			e := filepath.Walk(r, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					if errc != nil {
+						errc <- err
+					}
+					return nil
+				}
 
-                                if info.IsDir() {
-                                        if path == r {
-                                               // top level path - descend into it but don't return it
-                                                return nil
-                                        }
-                                        if ((options & NoRecurse) != 0)  ||
-                                           ((options & HiddenDirs) == 0 && strings.HasPrefix(info.Name(), ".")) { /* ||
-                                           ((options & OneDevice != 0) && TODO: xdev check) */
-                                                return filepath.SkipDir
-                                        }
-                                        if rmap[path] == true {
-                                                // walked into a path double
-                                                errc <- errors.New("Skipping duplicate dir " + path)
-                                                return filepath.SkipDir
-                                                // TODO: add inode-based recursion test for OS's which support recursion
-                                        }
-                                        if (options & ReturnDirs) != 0 {
-                                                filec <- &File{unfixpath(path), info}
-                                        }
-                                        return nil
-                                }
+				if info.IsDir() {
+					if path == r {
+						// top level path - descend into it but don't return it
+						return nil
+					}
+					if ((options & NoRecurse) != 0) ||
+						((options&HiddenDirs) == 0 && strings.HasPrefix(info.Name(), ".")) { /* ||
+						   ((options & OneDevice != 0) && TODO: xdev check) */
+						return filepath.SkipDir
+					}
+					if rmap[path] == true {
+						// walked into a path double
+						errc <- errors.New("Skipping duplicate dir " + path)
+						return filepath.SkipDir
+						// TODO: add inode-based recursion test for OS's which support recursion
+					}
+					if (options & ReturnDirs) != 0 {
+						filec <- &File{unfixpath(path), info}
+					}
+					return nil
+				}
 
-                                if !info.Mode().IsRegular() {
-                                        // don't return anything other than regular files
-                                        // TODO: symlink handling
-                                        return nil
-                                }
+				if !info.Mode().IsRegular() {
+					// don't return anything other than regular files
+					// TODO: symlink handling
+					return nil
+				}
 
-                                if path != r {
-                                        if rmap[path] == true {
-                                                // path double
-                                                if errc != nil {
-                                                        errc <- errors.New("Skipping duplicate file " + path)
-                                                }
-                                                return nil
-                                        }
-                                        if (options & HiddenFiles) == 0 && strings.HasPrefix(info.Name(), ".") {
-                                                // skip hidden file
-                                                return nil
-                                        }
-                                }
-                                // TODO: also collect & return dev and inode data
+				if path != r {
+					if rmap[path] == true {
+						// path double
+						if errc != nil {
+							errc <- errors.New("Skipping duplicate file " + path)
+						}
+						return nil
+					}
+					if (options&HiddenFiles) == 0 && strings.HasPrefix(info.Name(), ".") {
+						// skip hidden file
+						return nil
+					}
+				}
+				// TODO: also collect & return dev and inode data
 
-                                // Send result to filec unless done has been closed
-                                select{
-                                case filec <- &File{unfixpath(path), info}:
-                                case <-done:
-                                        return errors.New("walk canceled")
-                                }
-                                return nil
-                        })
-                        if e != nil && errc != nil {
-                                errc <- e
-                        }
-                        wg.Done()
-                }(root)
-        }
+				// Send result to filec unless done has been closed
+				select {
+				case filec <- &File{unfixpath(path), info}:
+				case <-done:
+					return errors.New("walk canceled")
+				}
+				return nil
+			})
+			if e != nil && errc != nil {
+				errc <- e
+			}
+			wg.Done()
+		}(root)
+	}
 
-        go func() {
-                // wait until all roots have been walked, then close channels
-                wg.Wait()
-                close(filec)
-        }()
+	go func() {
+		// wait until all roots have been walked, then close channels
+		wg.Wait()
+		close(filec)
+	}()
 
-        return filec
+	return filec
 }
 
-
 func fixpath(p string) (string, error) {
-        var err error
-        // clean path
-        p, err = filepath.Abs(filepath.Clean(p))
-        // Workaround for archaic Windows path length limit
-        if runtime.GOOS == "windows" && !strings.HasPrefix(p, winLongPathHack) {
-                p = winLongPathHack + p
-        }
-        return p, err
+	var err error
+	// clean path
+	p, err = filepath.Abs(filepath.Clean(p))
+	// Workaround for archaic Windows path length limit
+	if runtime.GOOS == "windows" && !strings.HasPrefix(p, winLongPathHack) {
+		p = winLongPathHack + p
+	}
+	return p, err
 }
 
 func unfixpath(p string) string {
-        if runtime.GOOS == "windows" {
-                return strings.TrimPrefix(p, winLongPathHack)
-        }
-        return p
+	if runtime.GOOS == "windows" {
+		return strings.TrimPrefix(p, winLongPathHack)
+	}
+	return p
 }

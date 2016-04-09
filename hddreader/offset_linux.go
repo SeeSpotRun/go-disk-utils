@@ -22,29 +22,27 @@
 *
 **/
 
-
 package hddreader
 
 import (
-        "os"
-        "github.com/SeeSpotRun/go-fibmap" // forked from https://github.com/frostschutz/go-fibmap
-                                          // TODO: pull request to merge changes
+	"github.com/SeeSpotRun/go-fibmap" // forked from https://github.com/frostschutz/go-fibmap
+	"os"
+	// TODO: pull request to merge changes
 )
-
 
 // offsetof returns the physical offset (relative to disk start) of
 // the data at the specified absolute position in an open file
 func offsetof(f *os.File, logical uint64) (uint64, error) {
-        extents, errno := fibmap.NewFibmapFile(f).FiemapAt(1, logical)
-        if errno == 0 {
-                if len(extents) == 0 {
-                        // there is no data for this range of the file - it's a hole?
-						return 0, nil
-                }
-                // get result from first extent with adjustment for logical position relative to start of extent
-				return extents[0].Physical + logical - extents[0].Logical, nil
-        } else {
-                return 0, errno // converts errno to go err
-        }
+	extents, errno := fibmap.NewFibmapFile(f).FiemapAt(1, logical)
+	if errno == 0 {
+		if len(extents) == 0 {
+			// there is no data for this range of the file - it's a hole?
+			return 0, nil
+		}
+		// get result from first extent with adjustment for logical position relative to start of extent
+		return extents[0].Physical + logical - extents[0].Logical, nil
+	} else {
+		return 0, errno // converts errno to go err
+	}
 
 }

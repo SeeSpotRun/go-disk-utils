@@ -22,45 +22,43 @@
 *
 **/
 
-
 package hddreader
 
 import (
-        "os"
+	"os"
 )
-
 
 // offsetf returns the physical offset (relative to disk start) of
 // the data at the specified relative position in an open file
 func offsetf(f *os.File, seek int64, whence int) (physical uint64, logical uint64, size int64, err error) {
 
-		info, err := f.Stat()
-		if err != nil {
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	size = info.Size()
+
+	switch {
+	case whence == os.SEEK_SET:
+		logical = uint64(seek)
+	case whence == os.SEEK_CUR:
+		// calculate required file offset without changing actual seek
+		current, e := f.Seek(0, 0)
+		if e != nil {
+			err = e
 			return
 		}
-		size = info.Size()
-		
-        switch {
-		case whence == os.SEEK_SET:
-				logical = uint64(seek)
-        case whence == os.SEEK_CUR:
-                // calculate required file offset without changing actual seek
-                current, e := f.Seek(0, 0)
-                if e != nil {
-						err = e
-                        return
-                }
-                logical = uint64(seek + current)
-        case whence == os.SEEK_END:
-                logical = uint64(seek + size)
-		default:
-				// default to logical = 0?
-        }
-        physical, err = offsetof(f, logical)
-		if err != nil {
-				return 0, 0, 0, err
-		}
-		return
+		logical = uint64(seek + current)
+	case whence == os.SEEK_END:
+		logical = uint64(seek + size)
+	default:
+		// default to logical = 0?
+	}
+	physical, err = offsetof(f, logical)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return
 }
 
 // offset returns the physical offset (relative to disk start) of
