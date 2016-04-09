@@ -145,8 +145,8 @@ Hash types:
 	}
 
 	// parse args
-	args, err := docopt.Parse(usage+options+hashopts, os.Args[1:], false, "sum 0.1", false, false)
-	if err != nil {
+	args, err := docopt.Parse(usage+options+hashopts, os.Args[1:], false, "sums 0.1", false, false)
+	if err != nil || args["--help"] == true {
 		fmt.Println(options + hashopts)
 		return
 	}
