@@ -278,7 +278,6 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
                                         // ahead/behind window 'extras' don't reset offset
                                         offset = popped.Offset
                                 }
-                                // log.Printf("%20d %10d", popped.Offset, len(reqs))
 
                                 // safe delete from slice:
                                 copy(reqs[i:], reqs[i+1:])
@@ -420,7 +419,7 @@ func (f *File) Read(b []byte) (n int, err error) {
         // open f.File for reading
         err = f.open()
         if err != nil {
-                f.Close()
+                f.Close()  // TODO: this can't be right
                 return
         }
 
@@ -430,11 +429,6 @@ func (f *File) Read(b []byte) (n int, err error) {
                 f.Close()
         }
 
-        // TODO: would this help or is it an over-optimisation?:
-        // o, e := OffsetFile(f.file, 0, 0)
-        // if e == nil {
-        //     f.Offset = o
-        // }
         return
 }
 
