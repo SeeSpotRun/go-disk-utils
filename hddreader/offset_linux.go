@@ -32,7 +32,7 @@ import (
 
 // offsetof returns the physical offset (relative to disk start) of
 // the data at the specified absolute position in an open file
-func offsetof(f *os.File, logical uint64, bytespersector uint64) (uint64, error) {
+func offsetof(f *os.File, logical uint64) (uint64, error) {
 	extents, errno := fibmap.NewFibmapFile(f).FiemapAt(1, logical)
 	if errno == 0 {
 		if len(extents) == 0 {
@@ -45,4 +45,9 @@ func offsetof(f *os.File, logical uint64, bytespersector uint64) (uint64, error)
 		return 0, errno // converts errno to go err
 	}
 
+}
+
+// not used in linux
+func bps(path string) uint64 {
+	return 1
 }

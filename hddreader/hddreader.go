@@ -325,6 +325,14 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 				// channel closed; we are done
 				break
 			}
+
+			// adjust offset windows for sector size in windows
+			if self.bps == 0 {
+				self.bps = bps(f.name)
+				ahead = ahead / int64(self.bps)
+				behind = behind / int64(self.bps)
+			}
+
 			// append to unsorted reqs:
 			requ = append(requ, f)
 			release()
@@ -384,21 +392,18 @@ type File struct {
 // Open creates a new File object associated with a Disk, and register the
 // file's physical position on the disk.  It may block until the disk's
 // total open file count falls below the disk's open file limit.
-func Open(name string, disk *Disk) (*File, error) {
-
-	self := &File{file: nil, disk: disk, name: name, isshut: true}
+func Open(name string, disk *Disk) (self *File, err error) {
 
 	// wait for open ticket
 	disk.poptik()
 	defer disk.pushtik()
 
-	var err error
-	self.Offset, _, self.size, err = offset(name, 0, 0, disk.getbps(name))
+	self = &File{file: nil, disk: disk, name: name, isshut: true}
+	self.Offset, _, self.size, err = offset(name, 0, 0)
 	if err != nil {
-		return nil, err
+		self = nil
 	}
-
-	return self, err
+	return
 }
 
 func OpenFile(name string, flag int, perm os.FileMode, disk *Disk, keepOpen bool) (*File, error) {

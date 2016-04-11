@@ -30,7 +30,7 @@ import (
 
 // offsetf returns the physical offset (relative to disk start) of
 // the data at the specified relative position in an open file
-func offsetf(f *os.File, seek int64, whence int, bytespersector uint64) (physical uint64, logical uint64, size int64, err error) {
+func offsetf(f *os.File, seek int64, whence int) (physical uint64, logical uint64, size int64, err error) {
 
 	info, err := f.Stat()
 	if err != nil {
@@ -54,7 +54,7 @@ func offsetf(f *os.File, seek int64, whence int, bytespersector uint64) (physica
 	default:
 		// default to logical = 0?
 	}
-	physical, err = offsetof(f, logical, bytespersector)
+	physical, err = offsetof(f, logical)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -63,11 +63,11 @@ func offsetf(f *os.File, seek int64, whence int, bytespersector uint64) (physica
 
 // offset returns the physical offset (relative to disk start) of
 // the data at the specified position within a file associated with a path
-func offset(path string, seek int64, whence int, bytespersector uint64) (physical uint64, logical uint64, size int64, err error) {
+func offset(path string, seek int64, whence int) (physical uint64, logical uint64, size int64, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	//defer f.Close()
-	return offsetf(f, seek, whence, bytespersector)
+	return offsetf(f, seek, whence)
 }

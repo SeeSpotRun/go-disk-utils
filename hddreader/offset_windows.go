@@ -5,6 +5,7 @@ package hddreader
 import (
 	//"log"
 	"os"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 )
@@ -14,6 +15,7 @@ const (
 	extentsize                            = 16         // sizeof(Extent)
 	retrieval_pointers_buffer_size        = 12         // sizeof(Retrieval_pointers_buffer)
 	starting_vcn_input_buffer_size uint32 = 8          // sizeof(LARGE_INTEGER)
+	guessbps                              = 4096       // guess value to use if syscall fails
 )
 
 // large_integer represents a 64-bit signed integer in windows
@@ -49,7 +51,7 @@ type starting_vcn_input_buffer struct {
 
 // offsetof returns the physical offset (relative to disk start) of
 // the data at the specified absolute position in an open file
-func offsetof(f *os.File, logical uint64, bytespersector uint64) (uint64, error) {
+func offsetof(f *os.File, logical uint64) (uint64, error) {
 
 	//fd := syscall.Handle(f.Fd())
 	fd, err := syscall.Open(f.Name(), os.O_RDONLY|syscall.O_CLOEXEC, 0)
@@ -85,4 +87,50 @@ func offsetof(f *os.File, logical uint64, bytespersector uint64) (uint64, error)
 
 	//log.Printf(" %d %d %d %d %d \n", bytesreturned, extents[0].lcn.get(), extents[0].nextvcn.get(), extents[1].lcn.get(), extents[1].nextvcn.get())
 	return uint64(extents[1].lcn.get()) * bytespersector, nil
+}
+
+// bps uses syscall to get disk bytes per sector.
+// Credit to https://github.com/StalkR/goircbot/blob/master/lib/disk/space_windows.go
+func bps(path string) (result uint64) {
+	result = guessbps
+	volume := filepath.VolumeName(path)
+
+	kernel32, err := syscall.LoadLibrary("Kernel32.dll")
+	if err != nil {
+		log.Println("LoadLibrary:", err)
+		return
+	}
+	defer syscall.FreeLibrary(kernel32)
+	GetDiskFreeSpace, err := syscall.GetProcAddress(syscall.Handle(kernel32), "GetDiskFreeSpaceW")
+	if err != nil {
+		log.Println("GetProcAddress:", err)
+		return
+	}
+
+	sectorsPerCluster := int64(0)
+	bytesPerSector := int64(0)
+	numberOfFreeClusters := int64(0)
+	totalNumberOfClusters := int64(0)
+
+	r1, _, e1 := syscall.Syscall6(uintptr(GetDiskFreeSpace), 4,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(volume))),
+		uintptr(unsafe.Pointer(&sectorsPerCluster)),
+		uintptr(unsafe.Pointer(&bytesPerSector)),
+		uintptr(unsafe.Pointer(&numberOfFreeClusters)),
+		uintptr(unsafe.Pointer(&totalNumberOfClusters)), 0)
+
+	if r1 == 0 {
+		if e1 != 0 {
+			err = error(e1)
+			log.Println("Syscall6, e1:", err)
+		} else {
+			log.Println("Syscall6:", syscall.EINVAL)
+			err = syscall.EINVAL
+		}
+		return
+	}
+	log.Println("spc, bps:", sectorsPerCluster, bytesPerSector)
+
+	result = uint64(sectorsPerCluster * bytesPerSector)
+	return
 }
