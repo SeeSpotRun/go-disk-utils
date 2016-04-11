@@ -52,7 +52,6 @@ package hddreader
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -77,77 +76,7 @@ const (
 )
 
 // convenience type for signalling channels
-type nothing struct{}
-
-// bufferpool manages a pool of recyclable fixed-size []byte buffers.  I learnt this trick from sahib:
-// https://github.com/sahib/rmlint/commit/f8fe6ffa4684405ece1d7c3aa173d0c3d82ccdb1#diff-5181df57afdfbebfb9dd6e2fd4060cf6R18
-type bufferpool struct {
-	BufSize int
-	maxbufs int
-	nbufs   int
-	bufs    chan []byte
-	reqs    chan nothing
-}
-
-// newbufferpool creates a bufferpool and starts a goroutine which
-// feeds new buffers into the pool as required
-func newbufferpool(bufsize int, maxbufs int) *bufferpool {
-	self := &bufferpool{
-		BufSize: bufsize,
-		maxbufs: maxbufs,
-		bufs:    make(chan ([]byte), maxbufs),
-		reqs:    make(chan (nothing)),
-	}
-	go func() {
-		// if any requests received for new buffers then pop one or make one
-		for _ = range self.reqs {
-			if self.nbufs < self.maxbufs {
-				self.nbufs++
-				self.bufs <- make([]byte, self.BufSize)
-			}
-		}
-	}()
-
-	return self
-}
-
-// get gets a buffer from the pool
-func (p *bufferpool) get() []byte {
-	select {
-	case b := <-p.bufs:
-		// recycled buffer
-		return b
-	default:
-		// no buffers in pool; request new one
-		p.reqs <- nothing{}
-		// wait for buffer to arrive
-		return <-p.bufs
-	}
-}
-
-// ret returns a buffer to the pool
-func (p *bufferpool) ret(b []byte) {
-	select {
-	// note: b is expanded to cap(b) before returning
-	case p.bufs <- b[:cap(b)]: // should not block
-	default:
-		panic("Blocked returning buffer")
-	}
-}
-
-// close closes the bufferpool and returns the number of buffers used
-func (p *bufferpool) close() (used int, err error) {
-	close(p.reqs)
-	close(p.bufs)
-	used = 0
-	for _ = range p.bufs {
-		used++
-	}
-	if used != p.nbufs {
-		err = errors.New(fmt.Sprintf("Expected %d buffers, got %d", p.nbufs, used))
-	}
-	return
-}
+type token struct{}
 
 // A Disk schedules read operations for files.  It shoulds be created using NewDisk.  A call
 // to Disk.Start() is required before the disk will allow associated files to start
@@ -167,7 +96,6 @@ type Disk struct {
 	opench  chan struct{} // tickets to limit number of simultaneous files open
 	reqch   chan *File    // requests for read permission
 	donech  chan *File    // signal that file has finished reading
-	bufpool *bufferpool   // reusable read buffers
 	startch chan struct{} // used by disk.Start() to signal start of reading
 	wait    int           // how many pending reads to wait for before starting first read
 	bps     uint64        // how many bytes per disk sector (needed for Windows offset calcs)
@@ -187,6 +115,7 @@ type Disk struct {
 //
 func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int, bufkB int) *Disk {
 
+	log.Println("NewDisk", bufkB)
 	if maxread <= 0 {
 		maxread = defaultMaxRead
 	}
@@ -216,7 +145,8 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
 	}
 
 	if bufkB > 0 {
-		self.bufpool = newbufferpool(defaultBufSize, 1+(bufkB*1024-1)/defaultBufSize)
+		log.Println("Init bufpool")
+		InitPool(defaultBufSize, 1+(bufkB*1024-1)/defaultBufSize)
 	}
 
 	// Populate opench (a buffered chanel to limit total concurrent Open() + Read() calls)
@@ -235,7 +165,7 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
 func (self *Disk) Start(wait int) {
 	// wait until no Open() calls in progress
 	self.wait = wait
-	self.startch <- nothing{}
+	self.startch <- token{}
 }
 
 // scheduler manages file.Read() calls to try to process files in disk order
@@ -361,19 +291,17 @@ func (d *Disk) poptik() {
 
 // pushtik returns an open fd ticket
 func (d *Disk) pushtik() {
-	d.opench <- nothing{}
+	d.opench <- token{}
 }
 
 // Closes closes the disk scheduler and frees buffer memory
 func (d *Disk) Close() {
 	// close bufpool
-	if d.bufpool != nil {
-		n, err := d.bufpool.close()
-		// TODO: clean up debug logging
-		log.Printf("Buffers used: %d", n)
-		if err != nil {
-			log.Println(err)
-		}
+	n, err := ClosePool()
+	// TODO: clean up debug logging
+	log.Printf("Buffers used: %d", n)
+	if err != nil {
+		log.Println(err)
 	}
 }
 
@@ -441,7 +369,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 		return 0, err
 	}
 
-	if f.disk.bufpool != nil {
+	if bufc != nil {
 		// do asynchronous read & write, freeing up disk as soon as read is finished
 
 		ch := make(chan ([]byte), defaultBufPerFile) // TODO: revisit buffer count
@@ -455,7 +383,7 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 		go func() {
 			for b := range ch {
 				m, werr := w.Write(b)
-				f.disk.bufpool.ret(b)
+				PutBuf(b)
 				n += int64(m)
 				if werr != nil {
 					close(ch)
@@ -467,14 +395,14 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 
 		// do the reading and send to the writer goroutine
 		for err == nil {
-			b := f.disk.bufpool.get()
+			b := GetBuf()
 			var m int
 			m, err = f.file.Read(b)
 			if err == nil || err == io.EOF {
 				// send read data to the writer goroutine
 				ch <- b[:m]
 			} else {
-				f.disk.bufpool.ret(b)
+				PutBuf(b)
 			}
 		}
 		close(ch)
