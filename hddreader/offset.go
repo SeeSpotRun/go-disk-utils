@@ -68,6 +68,6 @@ func offset(path string, seek int64, whence int) (physical uint64, logical uint6
 	if err != nil {
 		return
 	}
-	//defer f.Close()
+	defer f.Close()
 	return offsetf(f, seek, whence)
 }

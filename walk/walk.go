@@ -1,12 +1,12 @@
 /**
-*  This file is part of go-disk-utils.
+*  This file is part of drs.
 *
-*  go-disk-utils is free software: you can redistribute it and/or modify
+*  drs is free software: you can redistribute it and/or modify
 *  it under the terms of the GNU General Public License as published by
 *  the Free Software Foundation, either version 3 of the License, or
 *  (at your option) any later version.
 *
-*  go-disk-utils are distributed in the hope that it will be useful,
+*  drs is distributed in the hope that it will be useful,
 *  but WITHOUT ANY WARRANTY; without even the implied warranty of
 *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 *  GNU General Public License for more details.
@@ -18,31 +18,15 @@
  *
  *  - Daniel <SeeSpotRun> T.   2016-2016 (https://github.com/SeeSpotRun)
  *
-** Hosted on https://github.com/SeeSpotRun/go-disk-utils
+** Hosted on https://github.com/SeeSpotRun/drs
 *
 **/
 
-// walk walks one or more root paths concurrently and sends the results
-// back via a channel.  It wraps path/filepath.Walk() for people who
-// don't want to think too much about symlinks, recursion, hidden file
-// handling, etc.
-package walk
+file walk.go provides filesystem walking using the drs disk scheduler
 
-/*
- * TODO:
- * [x] write walk_test
- * [ ] add some more tests
- * [ ] benchmarking & profiling
- * [x] copyright etc
- * [ ] add separate channel for warnings vs walk errors?
- * [ ] symlink handling
- * [ ] add OneDevice option
- * [ ] add depth limiter
- * [ ] inode-based recursion test
- */
+package drs
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,27 +51,146 @@ const (
 const winLongPathLimit = 259
 const winLongPathHack = "\\\\?\\" // workaround prefix for windows 260-character path limit
 
-type File struct {
-	Path string
-	Info os.FileInfo
+var devs map[devt]*Disk
+
+type WalkOptions struct {
+	SeeRootLinks   bool
+        SeeLinks       bool
+        FollowLinks    bool
+	SeeDotFiles    bool
+	HiddenDirs     bool
+        HiddenFiles    bool
+        ReturnDirs     bool
+        NoRecurse      bool
+        OneDevice      bool
+        Errs           chan <- error
+        results        chan <- *File
+	wg	       *sync.WaitGroup
 }
 
-// FileCh returns a file channel and walks (concurrently) all paths under
+// Path implements the drs.Job interface
+type Path struct {
+	Name     string
+	Offset   uint64
+	Depth    int
+	Info     os.FileInfo
+	Disk     *Disk
+	opts     *WalkOptions
+}
+
+// Node is a unique identifier for a file
+// TODO: windows flavour
+type node struct {
+	Dev     uint64
+	Ino     uint64
+}
+
+// Go recurses into a directory, sending any files found and recursing any directories
+func (p *Path) Go(read TokenReturn) {
+	defer read.Done()
+	defer p.wg.Done()
+
+	if p.opts.ReturnDirs || !p.Info.IsDir() { // TODO: link checks
+		p.Send()
+	}
+
+	if !p.Info.IsDir() {
+		return
+	}
+
+	f, err := os.Open(p.Name)
+	if err != nil {
+		p.Report(err)
+		return
+	}
+	names, err := f.Readdir(-1)
+	f.Close()
+	if err != nil {
+		p.Report(err)
+		return
+	}
+
+	// recurse into next level:
+	// TODO: depth check
+	for _, name := range names {
+		if !opts.HiddenDirs && !opts.HiddenFiles && strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		// TODO: check if not in roots
+
+		filename := Join(w.dirname, name)
+
+		fileInfo, err := os.Lstat(filename)
+		if err != nil {
+			p.Report(err)
+			continue
+		}
+
+		if fileInfo.IsDir() && !opts.HiddenDirs && strings.HasPrefix(name, ".") {
+			// skip hidden dir
+			continue
+		}
+
+		if !fileInfo.IsDir() && !opts.HiddenFiles && strings.HasPrefix(name, ".") {
+			// skip hidden file
+			continue
+		}
+
+		path := &Path {
+			Name:   filename
+			Depth:  p.Depth + 1
+			Info:   fileInfo
+			Disk:   p.Disk  // TODO
+			opts:   p.opts
+			wg:     p.wg
+		}
+		
+		if !path.Disk.ssd {
+			path.Offset, _ := StartOffset(filename, 0, os.SEEK_SET)
+		}
+
+		if fileInfo.IsDir() {
+			// map inode to prevent recursion and path doubles
+			stat := fileInfo.Sys().(*syscall.Stat_t)
+			if !p.disk.AddDir( node { stat.Dev, stat.Ino }, filename )
+				p.Report(fmt.Errorf("Duplicate dir %s; skipping", filename))
+				continue
+			}
+
+		}
+		p.wg.Add()
+		path.Disk.Schedule(path, path.Offset, Normal)
+	}
+}
+
+
+func(p *Path) Report(e error) {
+	if p.opts.Errs != nil {
+		p.opts.Errs <- e
+	}
+}
+
+func(p *Path) Send() {
+	if p.opts.Results != nil {
+		p.opts.Results <- p
+	}
+}
+
+
+// Walk returns a path channel and walks (concurrently) all paths under
 // each root folder in []roots, sending all regular files encountered to the
 // channel, which is closed once all walks have completed.
 // Walking the same file or folder twice is avoided, so for example
-//  ch := FileCh(d, e, {"/foo", "/foo/bar"}, true)
+//  ch := Walk(e, {"/foo", "/foo/bar"}, options, disk)
 // will only walk the files in /foo/bar once.
-// Errors are returned via the optional caller-supplied error channel.
-// If hidden is false then hidden files and folders are ignored, unless
-// they are members of []roots.
-// If done is closed, FileCh() aborts the walk(s) and closes the file channel.
-func FileCh(
-	done <-chan struct{},
+// Errors are returned via errc (if provided).
+func Walk(
 	errc chan<- error,
 	roots []string,
-	options int,
-) <-chan *File {
+	options *WalkOptions,
+	disk *Disk,   // TODO
+) <-chan *Path {
 
 	// canonicalise root dirs, removing duplicate paths
 	rmap := make(map[string]bool)
@@ -103,82 +206,30 @@ func FileCh(
 	}
 
 	// create result channel
-	filec := make(chan *File)
+	opts.Results = make(chan *File)
 
 	// be flexible with done channel
 	if done == nil {
 		done = make(chan (struct{}))
 	}
 
-	// start goroutine for each root path
-	var wg sync.WaitGroup
 	for root := range rmap {
+
+		fileInfo, err := os.Lstat(root)
+		path := &Path {
+			Name:   root
+			Depth:  0
+			Info:   fileInfo
+			Disk:   disk  // TODO
+			opts:   options
+		}
+
+		if !disk.ssd {
+			path.Offset, _, _, _ := StartOffset(filename, 0, os.SEEK_SET)
+		}
+		
 		wg.Add(1)
-		go func(r string) {
-			e := filepath.Walk(r, func(path string, info os.FileInfo, err error) error {
-				if err != nil {
-					if errc != nil {
-						errc <- err
-					}
-					return nil
-				}
-
-				if info.IsDir() {
-					if path == r {
-						// top level path - descend into it but don't return it
-						return nil
-					}
-					if ((options & NoRecurse) != 0) ||
-						((options&HiddenDirs) == 0 && strings.HasPrefix(info.Name(), ".")) { /* ||
-						   ((options & OneDevice != 0) && TODO: xdev check) */
-						return filepath.SkipDir
-					}
-					if rmap[path] == true {
-						// walked into a path double
-						errc <- errors.New("Skipping duplicate dir " + path)
-						return filepath.SkipDir
-						// TODO: add inode-based recursion test for OS's which support recursion
-					}
-					if (options & ReturnDirs) != 0 {
-						filec <- &File{unfixpath(path), info}
-					}
-					return nil
-				}
-
-				if !info.Mode().IsRegular() {
-					// don't return anything other than regular files
-					// TODO: symlink handling
-					return nil
-				}
-
-				if path != r {
-					if rmap[path] == true {
-						// path double
-						if errc != nil {
-							errc <- errors.New("Skipping duplicate file " + path)
-						}
-						return nil
-					}
-					if (options&HiddenFiles) == 0 && strings.HasPrefix(info.Name(), ".") {
-						// skip hidden file
-						return nil
-					}
-				}
-				// TODO: also collect & return dev and inode data
-
-				// Send result to filec unless done has been closed
-				select {
-				case filec <- &File{unfixpath(path), info}:
-				case <-done:
-					return errors.New("walk canceled")
-				}
-				return nil
-			})
-			if e != nil && errc != nil {
-				errc <- e
-			}
-			wg.Done()
-		}(root)
+		disk.Schedule(path, path.Offset, Normal)
 	}
 
 	go func() {
@@ -187,7 +238,7 @@ func FileCh(
 		close(filec)
 	}()
 
-	return filec
+	return opts.Results
 }
 
 func fixpath(p string) (string, error) {

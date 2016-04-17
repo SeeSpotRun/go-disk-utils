@@ -70,7 +70,7 @@ const ReporterChannelBufferSize = 4
 // Sum is a convenience type for storing hash results
 type Sum [SUM.Size]byte
 
-// The File struct represents a match candidate file
+// File represents a match candidate file
 type File struct {
 	path   string    // the absolute file path
 	size   int64     // file size in bytes
@@ -91,38 +91,33 @@ func (self *File) isFinal() bool {
 }
 
 func (self *File) Hash() {
-	/*
-		case file := <-disk.readc:
-			// check that file hash has been initialised
-			if file.hash == nil {
-				file.hash = SUM.New()
-			}
+	if file.hash == nil {
+		file.hash = SUM.New()
+	}
 
-			// closure to facilitate cleanup via defer
-			func() {
-				// if we get an error, file will be sent back to its group for disposal
-				defer func(f *File) {
-					if f.err != nil {
-						hashedc <- file
-					}
-				}(file)
+	defer func(f *File) {
+		if f.err != nil {
+			hashedc <- file
+		}
+	}(file)
 
-				fi, err := os.Open(file.path)
-				if err != nil {
-					file.err = err
-					return
-				}
+	fi, err := hddreader.Open(file.path)
+	if err != nil {
+		file.err = err
+		return
+	}
 
-				defer fi.Close()
+	defer fi.Close()
 
-				// seek to start position
-				_, file.err = fi.Seek(file.hashed, 0)
-				if file.err != nil {
-					return
-				}
+	// seek to start position
+	_, file.err = fi.Seek(file.hashed, 0)
+	if file.err != nil {
+		return
+	}
 
-				bytes := bytesToRead(file)
+	bytes := bytesToRead(file)
 
+	written, err := fi.WriteTo(
 				writer := asyncwriter.New(file.hash, 1024*8, 64, bufpool)
 
 				written, err := writer.ReadFrom(fi)

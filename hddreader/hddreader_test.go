@@ -1,8 +1,7 @@
-package hddreader_test
+package hddreader
 
 import (
 	"bytes"
-	"github.com/SeeSpotRun/go-disk-utils/hddreader"
 	"io"
 	"os"
 	"sync"

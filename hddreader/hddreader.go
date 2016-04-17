@@ -28,7 +28,7 @@
 // Main components:
 // File: file object, semi-interchangeable with os.File.  Implements: Reader, Closer, WriterTo
 // Disk: disk object, schedules file reads
-// bufferpool: pool of reusable same-sized []byte buffers
+// bufferpool.go: greates a pool of reusable same-sized []byte buffers
 package hddreader
 
 /*
@@ -51,7 +51,6 @@ package hddreader
  */
 
 import (
-	"errors"
 	"io"
 	"log"
 	"os"
@@ -70,9 +69,9 @@ const (
 	defaultAhead  = 2 * 1024 * 1024
 	defaultBehind = 1 * 1024 * 1024
 
-	defaultBufSize    = 4096 // for buffering file.WriteTo() calls
-	defaultBufCount   = 1024 // max number of buffers total
-	defaultBufPerFile = 10   // number of buffers per file
+	defaultBufSize    = 32 * 1024 // for buffering file.WriteTo() calls
+	defaultBufCount   = 1024      // max number of buffers total
+	defaultBufPerFile = 10        // number of buffers per file
 )
 
 // convenience type for signalling channels
@@ -95,10 +94,12 @@ type token struct{}
 type Disk struct {
 	opench  chan struct{} // tickets to limit number of simultaneous files open
 	reqch   chan *File    // requests for read permission
+	jobch   chan *Job
 	donech  chan *File    // signal that file has finished reading
 	startch chan struct{} // used by disk.Start() to signal start of reading
 	wait    int           // how many pending reads to wait for before starting first read
 	bps     uint64        // how many bytes per disk sector (needed for Windows offset calcs)
+	maxopen int           // max number of simultanous Open() calls
 }
 
 // NewDisk creates a new disk object to schedule read operations in order of increasing
@@ -111,8 +112,7 @@ type Disk struct {
 //
 // If bufkB > 0 then an internal buffer pool is created to buffer WriteTo() calls.  Note that while
 // read order is preserved, buffering may change the order in which WriteTo(w) calls complete, depending
-// on speed at which buffers are writted to w.
-//
+// on speed at which buffers are written to w.
 func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int, bufkB int) *Disk {
 
 	log.Println("NewDisk", bufkB)
@@ -142,6 +142,7 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
 		startch: make(chan (struct{})),
 		reqch:   make(chan (*File)),
 		donech:  make(chan (*File)), // TODO: does a buffer done channel improve speed?
+		maxopen: maxopen,
 	}
 
 	if bufkB > 0 {
@@ -162,10 +163,17 @@ func NewDisk(maxread int, maxwindow int, ahead int64, behind int64, maxopen int,
 
 // Start needs to be called once in order to enable file data to start reading.
 // If wait > 0 then will wait until that many read requests have been registered before starting
-func (self *Disk) Start(wait int) {
-	// wait until no Open() calls in progress
-	self.wait = wait
-	self.startch <- token{}
+func (d *Disk) Start(wait int) {
+	d.wait = wait
+	// wait until no Open() calls in progress: drain the open ticket pool
+	for i := 0; i < d.maxopen; i++ {
+		d.poptik()
+	}
+	// repopulate the open tickets
+	for i := 0; i < d.maxopen; i++ {
+		d.pushtik()
+	}
+	d.startch <- token{}
 }
 
 // scheduler manages file.Read() calls to try to process files in disk order
@@ -173,8 +181,8 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 
 	openFiles := 0
 	var offset uint64 = 0
-	var reqs []*File // sorted reqs
-	var requ []*File // unsorted reqs
+	var reqs Queue   // sorted reqs
+	var requ Queue   // unsorted reqs
 	started := false // whether reading has been started yet by disk.Start
 
 	release := func() {
@@ -189,17 +197,19 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 		for len(reqs)+len(requ) > 0 && openFiles < maxread+maxwindow {
 			if len(requ) >= len(reqs) {
 				// time to merge
-				sort.Sort(byoffset(requ))
-				reqs = merge(reqs, requ)
-				requ = nil
+				requ.Sort()
+				reqs, requ = Merge(reqs, requ)
 			}
-
+			//for _, f := range reqs {
+			//	log.Printf("       %12d:%s", f.Offset, f.name)
+			//}
 			// find first file at-or-ahead of disk head position
 			i := sort.Search(len(reqs), func(i int) bool { return reqs[i].Offset >= offset })
 
 			// pop() pops a job from the queue and unblocks its read request
 			pop := func(i int) {
 				popped := reqs[i]
+				//log.Printf("popped:%12d:%s", popped.Offset, popped.name)
 				if openFiles <= maxread {
 					// ahead/behind window 'extras' don't reset offset
 					offset = popped.Offset
@@ -231,7 +241,7 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 			} else if i > 0 && gap(i-1) <= 0 && gap(i-1) >= -behind {
 				// found a job in behind window; release it
 				pop(i - 1)
-			} else if gap(i) >= 0 {
+			} else if gap(i) >= 0 && openFiles < maxread {
 				// jump ahead to next file
 				pop(i)
 			} else {
@@ -273,6 +283,7 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 			offset = f.Offset
 			release()
 		case <-self.startch:
+			log.Println("Disk start")
 			started = true
 			release()
 		}
@@ -282,6 +293,31 @@ func (self *Disk) scheduler(maxread int, maxwindow int, ahead int64, behind int6
 		log.Printf("NON-ZERO OPEN FILES: %d\n", len(reqs))
 	}
 
+}
+
+type Work func(path string, data interface{}) //, done chan token)
+
+type Job struct {
+	Path   string      // file path
+	Offset uint64      // file location on disk
+	Work   Work        // callback
+	Data   interface{} // callback data
+}
+
+func (j *Job) Do() {
+	log.Println("hi-ho, hi-ho, it's off to work we go!")
+	j.Work(j.Path, j.Data)
+}
+
+func (d *Disk) AddJob(path string, poffset *uint64, work Work, data interface{}) {
+	j := &Job{Path: path, Work: work, Data: data}
+	if poffset == nil {
+		j.Offset, _, _, _ = offset(path, 0, 0)
+	} else {
+		j.Offset = *poffset
+	}
+	//d.jobch <- j
+	j.Do()
 }
 
 // poptik grants a ticket to open an fd
@@ -297,11 +333,13 @@ func (d *Disk) pushtik() {
 // Closes closes the disk scheduler and frees buffer memory
 func (d *Disk) Close() {
 	// close bufpool
-	n, err := ClosePool()
-	// TODO: clean up debug logging
-	log.Printf("Buffers used: %d", n)
-	if err != nil {
-		log.Println(err)
+	if bufc != nil {
+		n, err := ClosePool()
+		// TODO: clean up debug logging
+		log.Printf("Buffers used: %d", n)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }
 
@@ -309,6 +347,7 @@ func (d *Disk) Close() {
 // and methods for hdd-optimised reads.
 type File struct {
 	file   *os.File
+	reader io.Reader
 	disk   *Disk
 	size   int64          // file size in bytes (used for deciding how many read buffers)
 	name   string         // duplicates *os.File.Name() since File may be closed
@@ -326,7 +365,7 @@ func Open(name string, disk *Disk) (self *File, err error) {
 	disk.poptik()
 	defer disk.pushtik()
 
-	self = &File{file: nil, disk: disk, name: name, isshut: true}
+	self = &File{disk: disk, name: name, isshut: true}
 	self.Offset, _, self.size, err = offset(name, 0, 0)
 	if err != nil {
 		self = nil
@@ -350,17 +389,47 @@ func (f *File) Read(b []byte) (n int, err error) {
 		return
 	}
 
-	n, err = f.file.Read(b)
+	n, err = f.reader.Read(b)
 	if err != nil && err != io.EOF {
-		log.Printf("shut %s\n", f.name)
 		f.Close()
 	}
 
 	return
 }
 
-// WriteTo implements io.WriterTo interface.
-func (f *File) WriteTo(w io.Writer) (n int64, err error) {
+// Seek implements the io.Seeker interface.
+func (f *File) Seek(offset int64, whence int) (n int64, err error) {
+	// open f.file for reading
+	err = f.open()
+	if err != nil {
+		f.Close()
+		return 0, err
+	}
+	return f.file.Seek(offset, whence)
+
+}
+
+// WriteTo implements the io.WriterTo interface.
+// Does not support concurrent calls to WriteTo for the same file.
+func (f *File) WriteTo(w io.Writer) (int64, error) {
+	return f.writeTo(w, nil, -1)
+}
+
+func (f *File) LimitWriteTo(w io.Writer, l int64) (int64, error) {
+	return f.writeTo(w, nil, l)
+}
+
+// SendTo reads from f and sends the data as hddreader buf type to
+// the provided channel, then closes the channel.
+func (f *File) SendTo(ch chan buf) (n int64, err error) {
+	if bufc == nil {
+		panic("hddreader: SendTo called but bufferpool not initialised")
+	}
+	return f.writeTo(nil, ch, f.size)
+}
+
+// writeTo does the work for WriteTo and SendTo.
+func (f *File) writeTo(w io.Writer, ch chan buf, l int64) (n int64, err error) {
 
 	// open f.file for reading
 	err = f.open()
@@ -369,70 +438,20 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 		return 0, err
 	}
 
+	if l >= 0 {
+		f.reader = io.LimitReader(f.reader, l)
+	}
+
 	if bufc != nil {
-		// do asynchronous read & write, freeing up disk as soon as read is finished
-
-		ch := make(chan ([]byte), defaultBufPerFile) // TODO: revisit buffer count
-
-		// TODO: maybe need to flush any pending writes?
-
-		// writes to writer will be in background goroutine
-		var wg sync.WaitGroup
-		wg.Add(1)
-		var werr error // any error during writing
-		go func() {
-			for b := range ch {
-				m, werr := w.Write(b)
-				PutBuf(b)
-				n += int64(m)
-				if werr != nil {
-					close(ch)
-					break
-				}
-			}
-			wg.Done()
-		}()
-
-		// do the reading and send to the writer goroutine
-		for err == nil {
-			b := GetBuf()
-			var m int
-			m, err = f.file.Read(b)
-			if err == nil || err == io.EOF {
-				// send read data to the writer goroutine
-				ch <- b[:m]
-			} else {
-				PutBuf(b)
-			}
-		}
-		close(ch)
-		if err == io.EOF {
-			// EOF is expected result so cancel error
-			err = nil
-		}
-
-		// shut the underlying file
-		e := f.shut()
-		if e != nil && err == nil {
-			err = e
-		}
-
-		// tell the disk that reading is done
-		f.disk.donech <- f
-
-		// wait for reading to finish
-		wg.Wait()
-
-		if werr != nil {
-			err = werr
-		}
-		return n, err
+		// do async write so reading part gets freed up earlier
+		return f.writeAsync(w, ch)
 	}
 
 	// if w impements the ReaderFrom interface then use w.ReadFrom()
 	if w, ok := w.(io.ReaderFrom); ok {
-		m, err := w.ReadFrom(f.file)
-		n += m
+		var m int64
+		m, err = w.ReadFrom(f.reader)
+		n += int64(m)
 		// shut the underlying file
 		e := f.shut()
 		if e != nil && (err == nil || err == io.EOF) {
@@ -441,36 +460,136 @@ func (f *File) WriteTo(w io.Writer) (n int64, err error) {
 		// tell the disk that reading is done
 		f.disk.donech <- f
 
-		return n, err
+		return
 	}
 
 	// do 'conventional' read/write
 	// TODO: benchmark vs bufio
 	b := make([]byte, defaultBufSize)
-	for err == nil {
-		var nr int
-		nr, err = f.file.Read(b)
-		if err == nil || err == io.EOF {
-			nw, e := w.Write(b[:nr])
+	for {
+		nr, er := f.reader.Read(b)
+		if nr > 0 {
+			nw, ew := w.Write(b[:nr])
 			n += int64(nw)
-			if e == nil && nw != nr {
-				e = errors.New("Written bytes not equal to read bytes")
-				log.Printf("Read %d wrote %d\n", nr, nw)
+
+			if ew != nil {
+				err = ew
+				break
 			}
-			if e != nil {
-				err = e
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
 			}
 		}
-		// reexpand b if necessary
-		if len(b) < cap(b) {
-			b = b[:cap(b)]
+		if er == io.EOF {
+			break
+		}
+
+		if er != nil {
+			err = er
+			break
 		}
 	}
-	if err == io.EOF {
-		err = nil
+
+	e := f.shut()
+	if e != nil && err == nil {
+		err = e
 	}
+	// tell the disk that reading is done
+	f.disk.donech <- f
+
 	return
 
+}
+
+// do asynchronous read & write, freeing up disk as soon as read is finished
+// writes to writer will be in background goroutine.
+func (f *File) writeAsync(w io.Writer, ch chan buf) (n int64, err error) {
+	var wg sync.WaitGroup
+	var werr error // last error during writing
+
+	if w != nil {
+		// send buffers to writer
+		if ch != nil {
+			panic("writeAsync: either w or ch must be nil")
+		}
+		ch = make(chan (buf), defaultBufPerFile) // TODO: revisit buffer count
+		wg.Add(1)
+		go func() {
+			for b := range ch {
+				if werr != nil {
+					PutBuf(b)
+					continue
+				}
+				var nw int
+				nw, werr = w.Write(b)
+
+				n += int64(nw)
+				if nw != len(b) && werr == nil {
+					werr = io.ErrShortWrite
+				}
+				PutBuf(b)
+			}
+			wg.Done()
+		}()
+	}
+
+	// do the reading and send to the writer goroutine
+	for {
+		b := GetBuf()
+		nr, er := f.reader.Read(b)
+		if nr > 0 {
+			ch <- b[:nr]
+		} else {
+			PutBuf(b)
+		}
+		if er == io.EOF {
+			break
+		}
+
+		if er != nil {
+			err = er
+			break
+		}
+	}
+
+	for err == nil && werr == nil {
+		b := GetBuf()
+		var m int
+		m, err = f.reader.Read(b)
+		if m > 0 {
+			// send read data to the writer goroutine
+			ch <- b
+			n += int64(m)
+		} else {
+			PutBuf(b)
+		}
+	}
+	if w != nil {
+		close(ch)
+	}
+
+	if err == io.EOF {
+		// EOF is expected result so cancel error
+		err = nil
+	}
+
+	// shut the underlying file
+	e := f.shut()
+	if e != nil && err == nil {
+		err = e
+	}
+
+	// tell the disk that reading is done
+	f.disk.donech <- f
+
+	// wait for writing to finish
+	wg.Wait()
+
+	if werr != nil && err == nil {
+		err = werr
+	}
+	return
 }
 
 // shut closes the underlying os.File but not f itself
@@ -492,7 +611,7 @@ func (f *File) shut() (err error) {
 
 // open opens a file for reading.  If the file is already open for reading then
 // it's a NOP, otherwise it blocks until permission is granted by f.disk
-// to start reading.
+// to start reading.  If l >= 0 then the file is opened as a
 func (f *File) open() (err error) {
 	if f.isshut {
 
@@ -504,9 +623,9 @@ func (f *File) open() (err error) {
 		if err != nil {
 			// failed to open, tell disk
 			f.disk.donech <- f
-		} else {
-			f.isshut = false
 		}
+		f.reader = f.file
+		f.isshut = false
 	}
 	return
 }
@@ -527,49 +646,51 @@ func (f *File) Name() string {
 
 // TODO: extend func (f *File) to cover all os.File functions
 
-// byoffset implements sort.Interface for sorting a slice of File
-// pointers by increasing Offset.
-type byoffset []*File
+type Queue []*File
 
-func (f byoffset) Len() int           { return len(f) }
-func (f byoffset) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f byoffset) Less(i, j int) bool { return f[i].Offset < f[j].Offset }
+// implements sort.Interface for sorting by increasing Offset.
+func (q Queue) Len() int           { return len(q) }
+func (q Queue) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
+func (q Queue) Less(i, j int) bool { return q[i].Offset < q[j].Offset }
 
-type mergeptr struct {
-	f  []*File
-	i0 int // index of first uncopied file
-	i  int // current file index for comparison
+// Sort sorts files into ascending disk offset
+func (q Queue) Sort() {
+	sort.Sort(Queue(q))
 }
 
-// merge merges two sorted slices of *File
-func merge(a []*File, b []*File) []*File {
+// merge merges two sorted file queues
+func Merge(a Queue, b Queue) (Queue, Queue) {
 
 	if len(a) == 0 {
-		return b
+		return b, nil
 	}
 	if len(b) == 0 {
-		return a
+		return a, nil
 	}
 
-	merged := make([]*File, 0, len(a)+len(b))
+	merged := make(Queue, 0, len(a)+len(b))
 
-	from := &mergeptr{a, 0, 0} // next files will come from a
-	then := &mergeptr{b, 0, 0} // then from b
+	type mergeptr struct {
+		q   Queue
+		i0  int // index of first uncopied file
+		i   int // current file index for comparison
+		len int // readability shortcut for len(self.q)
+	}
 
-	for from.i <= len(from.f) {
-		if from.i == len(from.f) {
+	from := &mergeptr{a, 0, 0, len(a)} // next files will come from a
+	then := &mergeptr{b, 0, 0, len(b)} // then from b
+
+	for from.i <= from.len {
+		if from.i == from.len {
 			// from is finished, write remaining files
-			merged = append(merged, from.f[from.i0:]...)
-			merged = append(merged, then.f[then.i0:]...)
+			merged = append(merged, from.q[from.i0:]...)
+			merged = append(merged, then.q[then.i0:]...)
 			break
 		}
-		if then.i == len(then.f) {
-			panic("then.i == len(then.f)")
-		}
 
-		if then.f[then.i].Offset < from.f[from.i].Offset {
+		if then.q[then.i].Offset < from.q[from.i].Offset {
 			// time to switch piles
-			merged = append(merged, from.f[from.i0:from.i]...)
+			merged = append(merged, from.q[from.i0:from.i]...)
 			from.i0 = from.i
 			from, then = then, from
 		}
@@ -586,5 +707,5 @@ func merge(a []*File, b []*File) []*File {
 		off = f.Offset
 	}
 
-	return merged
+	return merged, nil
 }

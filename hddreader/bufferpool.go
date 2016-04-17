@@ -8,7 +8,9 @@ import (
 	"runtime"
 )
 
-var bufc chan []byte
+type buf []byte
+
+var bufc chan buf
 var reqc chan token
 var nbufs int
 
@@ -19,7 +21,7 @@ func InitPool(bufsize int, maxbufs int) {
 	if bufc != nil {
 		panic("hddreader/InitPool: Attempt to re-init pool")
 	}
-	bufc = make(chan ([]byte), maxbufs)
+	bufc = make(chan (buf), maxbufs)
 	reqc = make(chan (token))
 
 	go func() {
@@ -27,14 +29,14 @@ func InitPool(bufsize int, maxbufs int) {
 		for _ = range reqc {
 			if nbufs < maxbufs {
 				nbufs++
-				bufc <- make([]byte, bufsize)
+				bufc <- make(buf, bufsize)
 			}
 		}
 	}()
 }
 
 // GetBuf gets a buffer from the pool
-func GetBuf() []byte {
+func GetBuf() buf {
 	select {
 	case b := <-bufc:
 		// recycled buffer
@@ -48,7 +50,7 @@ func GetBuf() []byte {
 }
 
 // PutBuf returns a buffer to the pool
-func PutBuf(b []byte) {
+func PutBuf(b buf) {
 	select {
 	// note: b is expanded to cap(b) before returning
 	case bufc <- b[:cap(b)]: // should not block

@@ -55,6 +55,7 @@ import (
 	//
 	"github.com/docopt/docopt-go"
 	// local packages:
+	"github.com/SeeSpotRun/coerce"
 	"github.com/SeeSpotRun/go-disk-utils/hddreader"
 	"github.com/SeeSpotRun/go-disk-utils/walk"
 )
@@ -111,52 +112,89 @@ func main() {
     sum [--open=N] [options] [hashtypes] <path>...
     sum --hdd [--read=N] [--window=N] [--ahead=N] [--behind=N] [--max=N] [options] [hashtypes] <path>...
 `
-	options := `
+	useOptions := `
 Options:
-  -h --help     Show this screen
-  --version     Show version
+  -h --help      Show this screen
+  --version      Show version
+  --limit=N      Only hash the first N bytes of each file
 Walk options:
-  -r --recurse  Recurse paths if they are folders
-  --whilewalk   Don't wait for folder walk to finish before starting hashing
-  --minsize=N   Ignore files smaller than N bytes [default: 1]
-  --maxsize=N   Ignore files larger than N bytes [default: -1]
+  -r --recurse   Recurse paths if they are folders
+  --hidden       Include hidden files and folders
+  --whilewalk    Don't wait for folder walk to finish before starting hashing
+  --minsize=N    Ignore files smaller than N bytes [default: 1]
+  --maxsize=N    Ignore files larger than N bytes [default: -1]
+  --ls           Just list the files, don't hash
 System options:
-  -p --procs=N  Limit number of simultaneous processes (defaults to NumCPU)
+  -p --procs=N   Limit number of simultaneous processes (defaults to NumCPU)
   --cpuprofile=<file>  Write cpu profile to file
-  --open=N      Limit number of open file handles to N [default: 10]
-HDD options
-  -d --hdd      Use hddreader to optimise reads
-  --read=N      Limit number of files reading simultaneously [default: 1]
-  --ahead=<kB>  Files within this many kB ahead of disk head ignore 'read' limit [default: 1024]
-  --behind=<kB> Files within this many kB behind disk head ignore 'read' limit [default: 0]
-  --window=N    Limit number of ahead/behind file exceptions [default: 5]
-  --handles=N   Limit number of open file handles to N [default: 100]
-  --buffer=<kB> Use a bufferpool to buffer disk reads
+  --open=N       Limit number of open file handles to N [default: 10]
+HDD options:
+  -d --hdd       Use hddreader to optimise reads
+  --simple       Don't try to be too fancy
+  --read=N       Limit number of files reading simultaneously [default: 1]
+  --ahead=<kB>   Files within this many kB ahead of disk head ignore 'read' limit [default: 1024]
+  --behind=<kB>  Files within this many kB behind disk head ignore 'read' limit [default: 0]
+  --window=N     Limit number of ahead/behind file exceptions [default: 5]
+  --handles=N    Limit number of open file handles to N [default: 100]
+  --buffer=<kB>  Use a bufferpool to buffer disk reads
 `
-	hashopts := `
-Hash types:
+	useHash := `Hashtype options:
 `
 	// add all available hash types to usage string
-	hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash (default)\n", hashnames[defaulthash], hashnames[defaulthash])
+	useHash = useHash + fmt.Sprintf("  --%-10s  Calculate %s hash (default)\n", hashnames[defaulthash], hashnames[defaulthash])
 	for i, n := range hashnames {
 		if i != int(defaulthash) && crypto.Hash(i).Available() {
-			hashopts = hashopts + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
+			useHash = useHash + fmt.Sprintf("  --%-10s  Calculate %s hash\n", n, n)
 		}
 	}
 
 	// parse args
-	args, err := docopt.Parse(usage+options+hashopts, os.Args[1:], false, "sums 0.1", false, false)
+	args, err := docopt.Parse(usage+useOptions+useHash, os.Args[1:], false, "sums 0.1", false, false)
 	if err != nil || args["--help"] == true {
-		fmt.Println(options + hashopts)
+		fmt.Println(useOptions + useHash)
 		return
 	}
 	if len(args) == 0 {
 		return
 	} // workaround for docopt not parsing other args if --version passed
 
-	cpuprofile, ok := args["--cpuprofile"].(string)
-	if ok {
-		f, err := os.Create(cpuprofile)
+	type options struct {
+		cpuprofile string
+		procs      int
+		hdd        bool
+		simple     bool
+		read       int
+		window     int
+		ahead      int64
+		behind     int64
+		handles    int
+		open       int
+		buffer     int
+		path       []string
+		maxsize    int64
+		minsize    int64
+		whilewalk  bool
+		hidden     bool
+		recurse    bool
+		limit      int64
+		ls         bool
+	}
+	var opts options
+
+	err = coerce.Struct(&opts, args, "--%s", "-%s", "<%s>")
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	if opts.ls {
+		opts.hdd = false
+		opts.simple = false
+		opts.whilewalk = true
+	}
+
+	if opts.cpuprofile != "" {
+		f, err := os.Create(opts.cpuprofile)
 		if err != nil {
 			panic(err)
 		}
@@ -178,74 +216,93 @@ Hash types:
 	fmt.Println()
 
 	// set number of processes
-	procs, ok := intarg("--procs", args)
-	if ok {
-		runtime.GOMAXPROCS(procs)
+
+	if opts.procs > 0 {
+		runtime.GOMAXPROCS(opts.procs)
 	} else {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 
-	// set up scheduler based on user args...
-	hdd, ok := args["--hdd"].(bool)
 	var disk *hddreader.Disk
 	var tickets chan struct{}
-	if ok && hdd {
+	var q hddreader.Queue
+	if opts.hdd {
+		//if !opts.simple {
 		// disk does scheduling if option hdd == true
-		bufkB, _ := intarg("--buffer", args)
-		ahead, _ := int64arg("--ahead", args)
-		behind, _ := int64arg("--behind", args)
-		readlimit, _ := intarg("--read", args)
-		windowlimit, _ := intarg("--window", args)
-		openlimit, _ := intarg("--handles", args)
-		disk = hddreader.NewDisk(readlimit, windowlimit, ahead*1024, behind*1024, openlimit, bufkB)
+		if opts.simple {
+			disk = hddreader.NewDisk(100, 0, 0, 0, 100, opts.buffer)
+		} else {
+			disk = hddreader.NewDisk(opts.read, opts.window, opts.ahead*1024, opts.behind*1024, opts.handles, opts.buffer)
+		}
 		disk.Start(0) // enables reading
-	} else {
-		// tickets limit number of active files when hdd==false
-		openlimit, _ := intarg("--open", args)
-		if openlimit <= 0 {
-			panic("Need --open > 0")
-		}
-		tickets = make(chan (struct{}), int(openlimit))
-		for i := 0; i < int(openlimit); i++ {
-			tickets <- struct{}{}
-		}
+		//}
+	}
+	// tickets limit number of active files when hdd==false
+	if opts.open <= 0 {
+		panic("Need --open > 0")
+	}
+	tickets = make(chan (struct{}), opts.open)
+	for i := 0; i < opts.open; i++ {
+		tickets <- struct{}{}
 	}
 
 	var wg sync.WaitGroup // callback for sum() calls
 
 	// sum(path) hash file contents and prints results
-	sum := func(path string) {
+	sum := func(path string, f interface{}) {
+		fh, ok := f.(*hddreader.File)
+		if !ok {
+			panic("sum() needs *hddreader.File as 2nd arg")
+		}
 		defer wg.Done()
 
-		var fi io.ReadCloser
+		var fo *os.File
 		var err error
 
-		if hdd {
+		if opts.hdd {
 			// open the file using hddreader as limiter
-			fi, err = hddreader.Open(path, disk)
+			defer fh.Close()
 		} else {
 			// use tickets channel to limit number of open files
 			_ = <-tickets
 			defer func() {
 				tickets <- struct{}{}
 			}()
-			fi, err = os.Open(path)
+			fo, err = os.Open(path)
+			defer fo.Close()
 		}
 
 		if err != nil {
 			log.Printf("Could not open %s: %s\n", path, err)
 			return
 		}
-		defer fi.Close()
 
 		// build a multiwriter to hash the file contents
 		w := make([]io.Writer, 0, len(hashtypes))
 		for _, t := range hashtypes {
 			w = append(w, t.New())
 		}
-		m := io.MultiWriter(w...)
 
-		_, err = io.Copy(m, fi)
+		var m io.Writer
+		if len(w) > 1 {
+			m = io.MultiWriter(w...)
+		} else {
+			m = w[0]
+		}
+
+		if opts.hdd {
+			if opts.limit > 0 {
+				_, err = fh.LimitWriteTo(m, opts.limit)
+			} else {
+				_, err = fh.WriteTo(m)
+			}
+		} else {
+			if opts.limit > 0 {
+				_, err = io.CopyN(m, fo, opts.limit)
+			} else {
+				_, err = io.Copy(m, fo)
+			}
+		}
 
 		if err != nil {
 			log.Printf("Failed hashing %s", err)
@@ -259,18 +316,24 @@ Hash types:
 				}
 				results = results + fmt.Sprintf("%x : ", sum.Sum(nil))
 			}
-			fmt.Printf("%s%s\n", results, path)
+			if opts.hdd {
+				fmt.Printf("%s %12d %s\n", results, fh.Offset, path)
+			} else {
+				fmt.Printf("%s%s\n", results, path)
+			}
 		}
 	}
 
 	// set up for walk...
-	paths, ok := args["<path>"].([]string)
-	maxsize, ok := int64arg("--maxsize", args)
-	minsize, ok := int64arg("--minsize", args)
-	whilewalk, ok := args["--whilewalk"].(bool)
 	walkopts := walk.Defaults
-	if recurse, _ := args["--recurse"].(bool); !recurse {
-		walkopts += walk.NoRecurse
+	if opts.simple {
+		opts.whilewalk = false
+	}
+	if !opts.recurse {
+		walkopts |= walk.NoRecurse
+	}
+	if opts.hidden {
+		walkopts |= walk.HiddenDirs | walk.HiddenFiles
 	}
 
 	// error reporting during walk:
@@ -285,36 +348,83 @@ Hash types:
 	pathmap := make(map[string]struct{})
 
 	// do the actual walk
-	for f := range walk.FileCh(nil, errc, paths, walkopts) {
+	for f := range walk.FileCh(nil, errc, opts.path, walkopts) {
 		// filter based on size
-		if maxsize >= 0 && f.Info.Size() > maxsize {
+		if opts.maxsize >= 0 && f.Info.Size() > opts.maxsize {
 			continue
 		}
-		if f.Info.Size() < minsize {
+		if f.Info.Size() < opts.minsize {
 			continue
 		}
 
-		if whilewalk {
+		if opts.whilewalk {
 			// start processing immediately
-			wg.Add(1)
-			go sum(f.Path)
+			if opts.ls {
+				fmt.Println(f.Path)
+			} else if opts.hdd {
+				fh, err := hddreader.Open(f.Path, disk)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				wg.Add(1)
+				go sum(f.Path, fh)
+			} else {
+				go sum(f.Path, nil)
+			}
 		} else {
 			// process after walk finished
 			pathmap[f.Path] = struct{}{}
 		}
 	}
 
-	if !whilewalk {
+	log.Println("Walk done")
+
+	if !opts.whilewalk {
 		for p := range pathmap {
-			wg.Add(1)
-			go sum(p)
+
+			if opts.hdd {
+				fh, err := hddreader.Open(p, disk)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				if opts.simple {
+					q = append(q, fh)
+				} else {
+					wg.Add(1)
+					go sum(p, fh)
+				}
+			} else {
+				wg.Add(1)
+				go sum(p, nil)
+			}
 		}
+	}
+
+	if opts.simple {
+		fch := make(chan (*hddreader.File))
+		for i := 0; i < opts.read; i++ {
+			go func() {
+				for f := range fch {
+					disk.AddJob(f.Name(), &f.Offset, sum, f)
+					//sum(f.Name(), f)
+				}
+			}()
+		}
+		q.Sort()
+		for _, f := range q {
+			wg.Add(1)
+			fch <- f
+		}
+		close(fch)
+		disk.Close()
 	}
 
 	// wait for all sum() goroutines to finish
 	wg.Wait()
 
-	if hdd {
+	if opts.hdd {
 		disk.Close()
 	}
 
